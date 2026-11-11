@@ -1,0 +1,36 @@
+[package]
+name = "cosmic-printers"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "GPL-3.0-only"
+description = "Printer queue applet for the COSMIC desktop"
+repository = "https://github.com/drmaas/cosmic-printers"
+readme = "README.md"
+
+[dependencies]
+futures = "0.3"
+i18n-embed-fl = "0.10"
+indexmap = "2"
+jiff = "0.2"
+rust-embed = "8.11"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt", "time"] }
+zbus = "6"
+
+[dependencies.i18n-embed]
+version = "0.16"
+features = ["fluent-system", "desktop-requester"]
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic.git"
+default-features = false
+features = [
+    "applet",
+    "applet-token",
+    "dbus-config",
+    "multi-window",
+    "tokio",
+    "wayland",
+    "winit",
+]
