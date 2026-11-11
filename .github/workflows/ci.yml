@@ -21,6 +21,12 @@ jobs:
       - name: Install system dependencies
         timeout-minutes: 3
         run: |
+          # The Ubuntu image sends apt to azure.archive.ubuntu.com. DNS for
+          # that host failed for the whole job, and apt exited 100.
+          files=$(grep -l azure.archive.ubuntu.com /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true)
+          if [ -n "$files" ]; then
+            sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' $files
+          fi
           sudo systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades || true
           sudo apt-get update \
             -o Acquire::Retries=3 \
