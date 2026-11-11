@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Arch Linux package for cosmic-printers.
+#
+# .github/workflows/release-arch.yml builds this in an Arch container. To build
+# it by hand on Arch, run `makepkg -si` in this directory. That downloads the
+# tagged source from GitHub. To build the working tree instead, put an archive
+# of it here under the name makepkg would download:
+#
+#   pkgver=$(sed -n 's/^pkgver=//p' arch/PKGBUILD)
+#   git archive --prefix="cosmic-printers-$pkgver/" \
+#       -o arch/"cosmic-printers-$pkgver.tar.gz" HEAD
+#   (cd arch && makepkg -si)
+#
+# pkgver must match Cargo.toml. scripts/check-version.sh checks both against the
+# release tag.
+
+pkgname=cosmic-printers
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Printer queue applet for the COSMIC desktop'
+arch=('x86_64')
+url='https://github.com/drmaas/cosmic-printers'
+license=('GPL-3.0-only')
+depends=(
+    'gcc-libs'
+    'glibc'
+    'wayland'
+    'libxkbcommon'
+    'fontconfig'
+    'freetype2'
+    'expat'
+    'libinput'
+    'cups'
+)
+optdepends=('system-config-printer: printer settings and job history')
+makedepends=(
+    'cargo'
+    'git'
+    'pkgconf'
+    'wayland'
+    'libxkbcommon'
+    'fontconfig'
+    'freetype2'
+    'expat'
+    'vulkan-headers'
+    'mesa'
+    'libinput'
+    'dbus'
+)
+# makepkg LTO flags are for C and break crates that compile C code.
+options=('!lto' '!debug')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+# CI substitutes an archive of the checkout, so a fixed checksum would not match.
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo test --frozen --release
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+
+    install -Dm0755 target/release/cosmic-printers \
+        "$pkgdir/usr/bin/cosmic-printers"
+    install -Dm0644 resources/io.github.drmaas.CosmicPrinters.desktop \
+        "$pkgdir/usr/share/applications/io.github.drmaas.CosmicPrinters.desktop"
+    install -Dm0644 resources/io.github.drmaas.CosmicPrinters.metainfo.xml \
+        "$pkgdir/usr/share/metainfo/io.github.drmaas.CosmicPrinters.metainfo.xml"
+    install -Dm0644 resources/icons/hicolor/scalable/apps/io.github.drmaas.CosmicPrinters.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.drmaas.CosmicPrinters.svg"
+    install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

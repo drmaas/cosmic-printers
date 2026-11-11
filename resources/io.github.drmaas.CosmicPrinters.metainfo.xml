@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.drmaas.CosmicPrinters</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Printers</name>
+  <summary>Manage print jobs from the COSMIC panel</summary>
+  <description>
+    <p>
+      Shows printers and the print queue on the COSMIC panel. Cancel a job,
+      move a waiting job to the front, and open printer settings.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/drmaas/cosmic-printers</url>
+  <url type="vcs-browser">https://github.com/drmaas/cosmic-printers</url>
+  <launchable type="desktop-id">io.github.drmaas.CosmicPrinters.desktop</launchable>
+  <provides>
+    <binary>cosmic-printers</binary>
+  </provides>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>printer</keyword>
+    <keyword>cups</keyword>
+    <keyword>COSMIC</keyword>
+  </keywords>
+  <content_rating type="oars-1.1"/>
+</component>

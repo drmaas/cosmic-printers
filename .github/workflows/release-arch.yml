@@ -1,0 +1,63 @@
+name: Release Arch package
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-arch:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - name: Install the toolchain and build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git github-cli cargo \
+            pkgconf wayland libxkbcommon fontconfig freetype2 expat \
+            vulkan-headers mesa libinput dbus
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the versions agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: scripts/check-version.sh "$GITHUB_REF_NAME"
+
+      - name: Build the package
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          pkgver=$(sed -n 's/^pkgver=//p' arch/PKGBUILD)
+          git archive --prefix="cosmic-printers-$pkgver/" \
+            -o arch/"cosmic-printers-$pkgver.tar.gz" HEAD
+          useradd -m builder
+          chown -R builder arch
+          su builder -c 'cd arch && makepkg --noconfirm'
+          mkdir -p dist
+          cp arch/*.pkg.tar.zst dist/
+          ls -l dist/
+
+      - name: Upload the package as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmic-printers-arch
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: error
+
+      - name: Publish the GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.pkg.tar.zst --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.pkg.tar.zst \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi

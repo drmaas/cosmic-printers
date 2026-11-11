@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=Printers
+Comment=Manage print jobs
+Type=Application
+Icon=io.github.drmaas.CosmicPrinters
+Exec=cosmic-printers
+Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;Printer;Print;CUPS;
+StartupNotify=true
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
+X-OverflowPriority=10

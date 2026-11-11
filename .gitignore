@@ -1,0 +1,9 @@
+.cargo/
+*.pdb
+**/*.rs.bk
+debug/
+target/
+vendor/
+vendor.tar
+dist/
+*.pkg.tar.zst
