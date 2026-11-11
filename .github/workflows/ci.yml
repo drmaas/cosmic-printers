@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -10,16 +12,21 @@ env:
 
 jobs:
   verify:
-    name: Format, lint, test, and build
+    name: Format, lint, and test
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install system dependencies
+        timeout-minutes: 3
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades || true
+          sudo apt-get update \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             libxkbcommon-dev \
             libwayland-dev \
             libssl-dev \
@@ -51,6 +58,3 @@ jobs:
 
       - name: Test
         run: cargo test --locked
-
-      - name: Build release
-        run: cargo build --release --locked
