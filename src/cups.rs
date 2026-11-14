@@ -2,6 +2,7 @@
 
 //! CUPS queue model, `lpstat` bootstrap, and the cupsd notifier.
 
+use std::collections::HashSet;
 use std::process::{Command, Stdio};
 
 use futures::stream::StreamExt;
@@ -434,8 +435,9 @@ fn read_queue() -> Queue {
         return Queue::with_error(QueueError::NoClient);
     }
     let printers = run_command("lpstat", &["-l", "-p"]);
+    let devices = run_command("lpstat", &["-v"]);
     let jobs = run_command("lpstat", &["-W", "not-completed", "-o"]);
-    for result in [&destinations, &printers, &jobs] {
+    for result in [&destinations, &printers, &devices, &jobs] {
         if let CommandResult::Failed(error) = result {
             eprintln!("cosmic-printers: {error}");
         }
@@ -445,6 +447,7 @@ fn read_queue() -> Queue {
         command_text(&destinations),
         command_text(&printers),
         command_text(&jobs),
+        command_text(&devices),
     );
     if !matches!(destinations, CommandResult::Ok(_))
         && !matches!(printers, CommandResult::Ok(_))
@@ -462,13 +465,22 @@ fn command_text(result: &CommandResult) -> &str {
     }
 }
 
-fn queue_from_outputs(destinations: &str, printers: &str, jobs: &str) -> Queue {
+/// Installed queues from `lpstat -p` are the printer list. CUPS also advertises
+/// temporary DNS-SD destinations on `lpstat -e`; those are hidden unless they
+/// appear as installed queues, so the same device is never listed twice.
+fn queue_from_outputs(destinations: &str, printers: &str, jobs: &str, devices: &str) -> Queue {
     let mut queue = Queue::empty();
-    for name in parse_destination_list(destinations) {
-        queue
+    let uris = parse_device_uri_map(devices);
+    for name in queue_printer_names(destinations, printers, &uris) {
+        let printer = queue
             .printers
             .entry(name.clone())
             .or_insert_with(|| Printer::new(&name));
+        if let Some(uri) = uris.get(&name)
+            && printer.uri.is_empty()
+        {
+            printer.uri = uri.clone();
+        }
     }
 
     let mut current: Option<String> = None;
@@ -540,6 +552,122 @@ fn parse_destination_list(output: &str) -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+fn installed_printer_names(printers: &str) -> Vec<String> {
+    printers
+        .lines()
+        .filter_map(|line| parse_printer_line(line).map(|parsed| parsed.name))
+        .collect()
+}
+
+fn parse_device_uri_map(output: &str) -> IndexMap<String, String> {
+    let mut map = IndexMap::new();
+    for line in output.lines() {
+        let Some(rest) = line.trim().strip_prefix("device for ") else {
+            continue;
+        };
+        let Some((name, uri)) = rest.split_once(": ") else {
+            continue;
+        };
+        if !name.is_empty() && !uri.is_empty() {
+            map.insert(name.to_string(), uri.trim().to_string());
+        }
+    }
+    map
+}
+
+fn device_identities(uri: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let lower = uri.to_ascii_lowercase();
+    if let Some(uuid) = query_param_value(&lower, "uuid") {
+        ids.push(uuid);
+    }
+    if let Some(host) = uri_authority_host(uri) {
+        ids.push(host.clone());
+        if let Some(stem) = host.strip_suffix(".local") {
+            ids.push(stem.to_string());
+        }
+    }
+    ids
+}
+
+fn query_param_value(uri: &str, key: &str) -> Option<String> {
+    let query = uri.split('?').nth(1)?;
+    query.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        (name.eq_ignore_ascii_case(key)).then(|| value.to_ascii_lowercase())
+    })
+}
+
+fn uri_authority_host(uri: &str) -> Option<String> {
+    let after_scheme = uri.split_once("://")?.1;
+    let authority = after_scheme.split(['/', '?', '#']).next()?;
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = host
+        .rsplit_once(']')
+        .map_or(host, |(left, _)| left.strip_prefix('[').unwrap_or(left));
+    let host = host
+        .rsplit_once(':')
+        .map_or(host, |(name, port)| {
+            if name.contains('.') || name.contains(':') || port.chars().all(|c| c.is_ascii_digit())
+            {
+                name
+            } else {
+                authority
+            }
+        })
+        .to_ascii_lowercase();
+    if host.is_empty() { None } else { Some(host) }
+}
+
+fn destinations_share_device(left: &str, right: &str, uris: &IndexMap<String, String>) -> bool {
+    let Some(left_ids) = uris.get(left).map(|uri| device_identities(uri)) else {
+        return false;
+    };
+    let Some(right_ids) = uris.get(right).map(|uri| device_identities(uri)) else {
+        return false;
+    };
+    left_ids
+        .iter()
+        .any(|id| right_ids.iter().any(|other| id == other))
+}
+
+fn queue_printer_names(
+    destinations: &str,
+    printers: &str,
+    uris: &IndexMap<String, String>,
+) -> Vec<String> {
+    let installed = installed_printer_names(printers);
+    if !installed.is_empty() {
+        return installed;
+    }
+
+    // `lpstat -p` failed or returned no queues; fall back to `lpstat -e` while
+    // collapsing destinations that resolve to the same device URI identity.
+    let mut list: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for name in parse_destination_list(destinations) {
+        if list
+            .iter()
+            .any(|kept| destinations_share_device(kept, &name, uris))
+        {
+            continue;
+        }
+        if let Some(uri) = uris.get(&name) {
+            let overlaps = device_identities(uri).iter().any(|id| seen.contains(id));
+            if overlaps {
+                continue;
+            }
+            for id in device_identities(uri) {
+                seen.insert(id);
+            }
+        }
+        list.push(name);
+    }
+    list
 }
 
 fn parse_printer_line(line: &str) -> Option<ParsedPrinterLine> {
@@ -821,8 +949,9 @@ fn decode_job_removed(message: &zbus::Message) -> Option<CupsSignal> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplyResult, CupsSignal, Job, Queue, parse_alerts_line, parse_destination_list,
-        parse_job_line, parse_printer_line, queue_from_outputs, send_job_to_front,
+        ApplyResult, CupsSignal, Job, Queue, device_identities, parse_alerts_line,
+        parse_destination_list, parse_device_uri_map, parse_job_line, parse_printer_line,
+        queue_from_outputs, queue_printer_names, send_job_to_front,
     };
     use crate::status::{
         JOB_STATE_CANCELED, JOB_STATE_PROCESSING, PRINTER_STATE_IDLE, PRINTER_STATE_STOPPED,
@@ -897,7 +1026,7 @@ printer Photo disabled since Tue Nov 10 09:00:00 2026 -
         let jobs = "\
 Office_Laser-4          daniel            2048   Tue Nov 10 11:00:00 2026
 ";
-        let queue = queue_from_outputs(destinations, printers, jobs);
+        let queue = queue_from_outputs(destinations, printers, jobs, "");
         assert!(queue.error.is_none());
         assert_eq!(queue.printers.len(), 2);
         let office = &queue.printers["Office_Laser"];
@@ -945,6 +1074,64 @@ Office_Laser-4          daniel            2048   Tue Nov 10 11:00:00 2026
 
         queue.handle_signal(CupsSignal::ServerStopped);
         assert!(queue.printers.is_empty());
+    }
+
+    #[test]
+    fn hides_dns_sd_duplicate_of_installed_queue() {
+        let destinations = "\
+Officejet5740
+HP_Officejet_5740_series_E156B4
+";
+        let printers = "\
+printer Officejet5740 is idle.  enabled since Sat Nov 10 10:00:00 2026
+";
+        let devices = "\
+device for Officejet5740: ipp://192.168.0.22/ipp/print
+device for HP_Officejet_5740_series_E156B4: dnssd://HP%20Officejet%205740%20series._ipp._tcp.local/?uuid=1c852a4d-b800-1f08-abcd-ecb1d7e156b4
+";
+        let queue = queue_from_outputs(destinations, printers, "", devices);
+        assert_eq!(queue.printers.len(), 1);
+        assert!(queue.printers.contains_key("Officejet5740"));
+        let officejet = &queue.printers["Officejet5740"];
+        assert_eq!(officejet.uri, "ipp://192.168.0.22/ipp/print");
+    }
+
+    #[test]
+    fn hides_discovered_only_destinations_when_installed_queues_exist() {
+        let destinations = "\
+Office_Laser
+Discovered_Only_Printer
+";
+        let printers = "\
+printer Office_Laser is idle.  enabled since Sat Nov 10 10:00:00 2026
+";
+        let devices = "\
+device for Office_Laser: ipp://192.168.1.50/ipp/print
+device for Discovered_Only_Printer: dnssd://Other._ipp._tcp.local/?uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+";
+        let names = queue_printer_names(destinations, printers, &parse_device_uri_map(devices));
+        assert_eq!(names, vec!["Office_Laser".to_string()]);
+        let queue = queue_from_outputs(destinations, printers, "", devices);
+        assert_eq!(queue.printers.len(), 1);
+        assert!(queue.printers.contains_key("Office_Laser"));
+    }
+
+    #[test]
+    fn device_identities_match_uuid_and_host() {
+        let dnssd =
+            "dnssd://HP%20Officejet._ipp._tcp.local/?uuid=1C852A4D-B800-1F08-ABCD-ECB1D7E156B4";
+        let ipp = "ipp://192.168.0.22/ipp/print";
+        assert!(
+            device_identities(dnssd)
+                .iter()
+                .any(|id| id == "1c852a4d-b800-1f08-abcd-ecb1d7e156b4")
+        );
+        assert!(device_identities(ipp).contains(&"192.168.0.22".to_string()));
+        let map = parse_device_uri_map(
+            "device for A: ipp://192.168.0.22/ipp/print\ndevice for B: dnssd://x/?uuid=1c852a4d-b800-1f08-abcd-ecb1d7e156b4\n",
+        );
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["A"], "ipp://192.168.0.22/ipp/print");
     }
 
     #[test]

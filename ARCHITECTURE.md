@@ -32,8 +32,9 @@ flowchart TD
 
 Bootstrap runs on a blocking thread. Every `lpstat` call sets `LC_ALL=C` and `LANG=C`, so the parser sees English lines.
 
-- `lpstat -e` lists destination names. A missing `lpstat` sets `QueueError::NoClient`.
-- `lpstat -l -p` sets printer state, the accepting flag, alerts, and the printing job.
+- `lpstat -e` lists destination names, including temporary DNS-SD discoveries. A missing `lpstat` sets `QueueError::NoClient`.
+- `lpstat -l -p` defines which queues are installed. Those names are the bootstrap printer list. Temporary discoveries from `-e` are not shown when installed queues exist, so one physical device is not listed twice.
+- `lpstat -v` supplies device URIs for bootstrap. When `-p` is empty, `-e` is used and destinations that share the same device identity (UUID or host) are collapsed.
 - `lpstat -W not-completed -o` lists jobs that are not finished.
 
 The destination list and the printer list can both fail. If nothing was parsed, the error is `QueueError::ListFailed`.
