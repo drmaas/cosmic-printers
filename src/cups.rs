@@ -61,13 +61,19 @@ impl Printer {
 pub struct Queue {
     pub printers: IndexMap<String, Printer>,
     pub error: Option<QueueError>,
+    /// Queue names from `lpstat -p`. While non-empty, discovered-only destinations are hidden.
+    installed_queues: HashSet<String>,
+    /// Filtered `lpstat -e` names mapped onto an installed queue with the same device.
+    destination_aliases: IndexMap<String, String>,
 }
 
 impl Queue {
-    fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             printers: IndexMap::new(),
             error: None,
+            installed_queues: HashSet::new(),
+            destination_aliases: IndexMap::new(),
         }
     }
 
@@ -75,6 +81,8 @@ impl Queue {
         Self {
             printers: IndexMap::new(),
             error: Some(error),
+            installed_queues: HashSet::new(),
+            destination_aliases: IndexMap::new(),
         }
     }
 
@@ -82,6 +90,8 @@ impl Queue {
         match signal {
             CupsSignal::ServerReset => {
                 self.printers.clear();
+                self.installed_queues.clear();
+                self.destination_aliases.clear();
                 self.error = None;
                 ApplyResult::Reset
             }
@@ -111,12 +121,19 @@ impl Queue {
                 state,
                 reasons,
                 accepting,
+                newly_added,
             } => {
                 if name.is_empty() {
                     return ApplyResult::Unchanged;
                 }
                 self.note_signal();
-                if self.update_printer(&name, &uri, state, &reasons, accepting) {
+                if newly_added {
+                    self.refresh_installed_queues();
+                }
+                let Some(resolved) = self.resolve_printer_name(&name, &uri) else {
+                    return ApplyResult::Unchanged;
+                };
+                if self.update_printer(&resolved, &uri, state, &reasons, accepting) {
                     ApplyResult::Changed
                 } else {
                     ApplyResult::Unchanged
@@ -136,14 +153,17 @@ impl Queue {
                     return ApplyResult::Unchanged;
                 }
                 self.note_signal();
+                let Some(resolved) = self.resolve_printer_name(&printer, &printer_uri) else {
+                    return ApplyResult::Unchanged;
+                };
                 let mut changed = self.update_printer(
-                    &printer,
+                    &resolved,
                     &printer_uri,
                     printer_state,
                     &printer_reasons,
                     accepting,
                 );
-                changed |= self.update_job(&printer, job_id, job_state, &job_name);
+                changed |= self.update_job(&resolved, job_id, job_state, &job_name);
                 if changed {
                     ApplyResult::Changed
                 } else {
@@ -162,8 +182,11 @@ impl Queue {
                     return ApplyResult::Unchanged;
                 }
                 self.note_signal();
+                let Some(resolved) = self.resolve_printer_name(&printer, &printer_uri) else {
+                    return ApplyResult::Unchanged;
+                };
                 let mut changed = self.update_printer(
-                    &printer,
+                    &resolved,
                     &printer_uri,
                     printer_state,
                     &printer_reasons,
@@ -171,7 +194,7 @@ impl Queue {
                 );
                 if self
                     .printers
-                    .get_mut(&printer)
+                    .get_mut(&resolved)
                     .is_some_and(|item| item.jobs.shift_remove(&job_id).is_some())
                 {
                     changed = true;
@@ -189,6 +212,63 @@ impl Queue {
         self.error = None;
     }
 
+    fn refresh_installed_queues(&mut self) {
+        let output = match run_command("lpstat", &["-l", "-p"]) {
+            CommandResult::Ok(text) => text,
+            CommandResult::Failed(_) | CommandResult::Missing => return,
+        };
+        self.installed_queues = installed_printer_names(&output).into_iter().collect();
+    }
+
+    /// Maps a notifier or lpstat job printer name to the queue row that should hold it.
+    fn resolve_printer_name(&self, name: &str, uri: &str) -> Option<String> {
+        if self.installed_queues.is_empty() {
+            return Some(name.to_string());
+        }
+        if self.installed_queues.contains(name) {
+            return Some(name.to_string());
+        }
+        if let Some(installed) = self.destination_aliases.get(name) {
+            return Some(installed.clone());
+        }
+        self.match_installed_by_uri(uri)
+    }
+
+    fn match_installed_by_uri(&self, uri: &str) -> Option<String> {
+        if uri.is_empty() {
+            return None;
+        }
+        self.installed_queues.iter().find_map(|installed| {
+            let printer = self.printers.get(installed)?;
+            if printer.uri.is_empty() {
+                return None;
+            }
+            uris_share_device(uri, &printer.uri).then(|| installed.clone())
+        })
+    }
+
+    fn resolve_job_printer(
+        &self,
+        name: &str,
+        signal_uri: &str,
+        bootstrap_uris: &IndexMap<String, String>,
+    ) -> Option<String> {
+        if self.installed_queues.is_empty() {
+            return Some(name.to_string());
+        }
+        if self.installed_queues.contains(name) {
+            return Some(name.to_string());
+        }
+        if let Some(installed) = self.destination_aliases.get(name) {
+            return Some(installed.clone());
+        }
+        self.match_installed_by_uri(signal_uri).or_else(|| {
+            bootstrap_uris
+                .get(name)
+                .and_then(|uri| self.match_installed_by_uri(uri))
+        })
+    }
+
     fn update_printer(
         &mut self,
         name: &str,
@@ -197,6 +277,9 @@ impl Queue {
         reasons: &str,
         accepting: bool,
     ) -> bool {
+        if !self.installed_queues.is_empty() && !self.installed_queues.contains(name) {
+            return false;
+        }
         let printer = self
             .printers
             .entry(name.to_string())
@@ -283,6 +366,7 @@ pub enum CupsSignal {
         state: u32,
         reasons: String,
         accepting: bool,
+        newly_added: bool,
     },
     PrinterDeleted {
         name: String,
@@ -471,6 +555,22 @@ fn command_text(result: &CommandResult) -> &str {
 fn queue_from_outputs(destinations: &str, printers: &str, jobs: &str, devices: &str) -> Queue {
     let mut queue = Queue::empty();
     let uris = parse_device_uri_map(devices);
+    queue.installed_queues = installed_printer_names(printers).into_iter().collect();
+    if !queue.installed_queues.is_empty() {
+        for dest in parse_destination_list(destinations) {
+            if queue.installed_queues.contains(&dest) {
+                continue;
+            }
+            let Some(installed) = queue
+                .installed_queues
+                .iter()
+                .find(|installed| destinations_share_device(installed, &dest, &uris))
+            else {
+                continue;
+            };
+            queue.destination_aliases.insert(dest, (*installed).clone());
+        }
+    }
     for name in queue_printer_names(destinations, printers, &uris) {
         let printer = queue
             .printers
@@ -506,10 +606,13 @@ fn queue_from_outputs(destinations: &str, printers: &str, jobs: &str, devices: &
     }
 
     for job in parse_job_lines(jobs) {
+        let Some(printer_name) = queue.resolve_job_printer(&job.printer, "", &uris) else {
+            continue;
+        };
         let printer = queue
             .printers
-            .entry(job.printer.clone())
-            .or_insert_with(|| Printer::new(&job.printer));
+            .entry(printer_name.clone())
+            .or_insert_with(|| Printer::new(&printer_name));
         printer.jobs.insert(
             job.id,
             Job {
@@ -567,7 +670,7 @@ fn parse_device_uri_map(output: &str) -> IndexMap<String, String> {
         let Some(rest) = line.trim().strip_prefix("device for ") else {
             continue;
         };
-        let Some((name, uri)) = rest.split_once(": ") else {
+        let Some((name, uri)) = rest.rsplit_once(": ") else {
             continue;
         };
         if !name.is_empty() && !uri.is_empty() {
@@ -575,6 +678,14 @@ fn parse_device_uri_map(output: &str) -> IndexMap<String, String> {
         }
     }
     map
+}
+
+fn uris_share_device(left: &str, right: &str) -> bool {
+    let left_ids = device_identities(left);
+    let right_ids = device_identities(right);
+    left_ids
+        .iter()
+        .any(|id| right_ids.iter().any(|other| id == other))
 }
 
 fn device_identities(uri: &str) -> Vec<String> {
@@ -823,14 +934,14 @@ fn decode(message: &zbus::Message) -> Option<CupsSignal> {
         "ServerStarted" | "ServerRestarted" => Some(CupsSignal::ServerReset),
         "ServerStopped" => Some(CupsSignal::ServerStopped),
         "ServerAudit" => None,
-        "PrinterAdded"
-        | "PrinterModified"
+        "PrinterAdded" => decode_printer(message, true),
+        "PrinterModified"
         | "PrinterRestarted"
         | "PrinterStopped"
         | "PrinterShutdown"
         | "PrinterStateChanged"
         | "PrinterFinishingsChanged"
-        | "PrinterMediaChanged" => decode_printer(message),
+        | "PrinterMediaChanged" => decode_printer(message, false),
         "PrinterDeleted" => decode_printer_deleted(message),
         "JobCreated" | "JobState" | "JobConfigChanged" | "JobProgress" => decode_job(message),
         "JobCompleted" | "JobStopped" => decode_job_removed(message),
@@ -838,7 +949,7 @@ fn decode(message: &zbus::Message) -> Option<CupsSignal> {
     }
 }
 
-fn decode_printer(message: &zbus::Message) -> Option<CupsSignal> {
+fn decode_printer(message: &zbus::Message, newly_added: bool) -> Option<CupsSignal> {
     let (_text, uri, name, state, reasons, accepting): (String, String, String, u32, String, bool) =
         message.body().deserialize().ok()?;
     if name.is_empty() {
@@ -850,6 +961,7 @@ fn decode_printer(message: &zbus::Message) -> Option<CupsSignal> {
         state,
         reasons,
         accepting,
+        newly_added,
     })
 }
 
@@ -1132,6 +1244,94 @@ device for Discovered_Only_Printer: dnssd://Other._ipp._tcp.local/?uuid=aaaaaaaa
         );
         assert_eq!(map.len(), 2);
         assert_eq!(map["A"], "ipp://192.168.0.22/ipp/print");
+    }
+
+    #[test]
+    fn printer_upsert_does_not_readd_filtered_dns_sd_destination() {
+        let destinations = "\
+Officejet5740
+HP_Officejet_5740_series_E156B4
+";
+        let printers = "\
+printer Officejet5740 is idle.  enabled since Sat Nov 10 10:00:00 2026
+";
+        let devices = "\
+device for Officejet5740: ipp://192.168.0.22/ipp/print
+device for HP_Officejet_5740_series_E156B4: dnssd://HP%20Officejet%205740%20series._ipp._tcp.local/?uuid=1c852a4d-b800-1f08-abcd-ecb1d7e156b4
+";
+        let mut queue = queue_from_outputs(destinations, printers, "", devices);
+        assert_eq!(queue.printers.len(), 1);
+
+        let result = queue.handle_signal(CupsSignal::PrinterUpsert {
+            name: "HP_Officejet_5740_series_E156B4".to_string(),
+            uri: "dnssd://HP%20Officejet%205740%20series._ipp._tcp.local/?uuid=1c852a4d-b800-1f08-abcd-ecb1d7e156b4".to_string(),
+            state: PRINTER_STATE_IDLE,
+            reasons: "none".to_string(),
+            accepting: true,
+            newly_added: false,
+        });
+        assert_eq!(result, ApplyResult::Unchanged);
+        assert_eq!(queue.printers.len(), 1);
+        assert!(
+            !queue
+                .printers
+                .contains_key("HP_Officejet_5740_series_E156B4")
+        );
+    }
+
+    #[test]
+    fn job_on_filtered_destination_maps_to_installed_queue() {
+        let destinations = "\
+Officejet5740
+HP_Officejet_5740_series_E156B4
+";
+        let printers = "\
+printer Officejet5740 is idle.  enabled since Sat Nov 10 10:00:00 2026
+";
+        let devices = "\
+device for Officejet5740: ipp://192.168.0.22/ipp/print?uuid=1c852a4d-b800-1f08-abcd-ecb1d7e156b4
+device for HP_Officejet_5740_series_E156B4: dnssd://HP%20Officejet%205740%20series._ipp._tcp.local/?uuid=1c852a4d-b800-1f08-abcd-ecb1d7e156b4
+";
+        let jobs = "\
+HP_Officejet_5740_series_E156B4-2          daniel            1024   Tue Nov 10 11:00:00 2026
+";
+        let queue = queue_from_outputs(destinations, printers, jobs, devices);
+        assert_eq!(queue.printers.len(), 1);
+        assert!(queue.printers.contains_key("Officejet5740"));
+        assert_eq!(queue.printers["Officejet5740"].jobs.len(), 1);
+        assert!(queue.printers["Officejet5740"].jobs.contains_key(&2));
+
+        let mut queue = queue;
+        let result = queue.handle_signal(CupsSignal::JobUpsert {
+            printer: "HP_Officejet_5740_series_E156B4".to_string(),
+            printer_uri: "dnssd://HP%20Officejet%205740%20series._ipp._tcp.local/?uuid=1c852a4d-b800-1f08-abcd-ecb1d7e156b4".to_string(),
+            printer_state: PRINTER_STATE_IDLE,
+            printer_reasons: "none".to_string(),
+            accepting: true,
+            job_id: 3,
+            job_state: 3,
+            job_name: "scan.pdf".to_string(),
+        });
+        assert_eq!(result, ApplyResult::Changed);
+        assert_eq!(queue.printers.len(), 1);
+        assert_eq!(queue.printers["Officejet5740"].jobs[&3].name, "scan.pdf");
+    }
+
+    #[test]
+    fn parse_device_uri_map_handles_colon_in_queue_name() {
+        let map = parse_device_uri_map("device for Lab: Color: ipp://192.168.1.10/ipp/print\n");
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["Lab: Color"], "ipp://192.168.1.10/ipp/print");
+    }
+
+    #[test]
+    fn parse_device_uri_map_tolerates_empty_and_partial_output() {
+        assert!(parse_device_uri_map("").is_empty());
+        assert!(parse_device_uri_map("no devices here\n").is_empty());
+        let map =
+            parse_device_uri_map("device for A: ipp://host/a\nmalformed line\n device for B: \n");
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["A"], "ipp://host/a");
     }
 
     #[test]

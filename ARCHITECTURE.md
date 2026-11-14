@@ -55,8 +55,8 @@ A dropped connection waits 5 seconds, then connects again.
 
 - `ServerStarted` and `ServerRestarted` clear the queue and bootstrap again.
 - `ServerStopped` clears the queue and waits.
-- Printer signals insert, update, or delete one printer.
-- Job signals insert, update, or remove one job. State `JOB_STATE_CANCELED` (7) or higher removes the job.
+- Printer signals insert, update, or delete one printer. When installed queues were loaded at bootstrap, temporary DNS-SD destinations stay hidden on live events too; `PrinterAdded` refreshes the installed queue list from `lpstat -p`.
+- Job signals insert, update, or remove one job. Jobs that name a filtered destination are attached to the matching installed queue when device URIs share identity; otherwise no extra printer row is created. State `JOB_STATE_CANCELED` (7) or higher removes the job.
 
 ```mermaid
 sequenceDiagram

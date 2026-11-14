@@ -92,10 +92,7 @@ impl cosmic::Application for AppModel {
             core,
             popup: None,
             config: config::load(),
-            queue: Queue {
-                printers: indexmap::IndexMap::new(),
-                error: None,
-            },
+            queue: Queue::empty(),
             tools: Tools {
                 config_tool: false,
                 properties: false,
