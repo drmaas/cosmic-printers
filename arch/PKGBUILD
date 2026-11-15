@@ -16,7 +16,7 @@
 # release tag.
 
 pkgname=cosmic-printers
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Printer queue applet for the COSMIC desktop'
 arch=('x86_64')
