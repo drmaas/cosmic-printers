@@ -99,7 +99,7 @@ The button draws the count next to the icon when `job_count` is greater than zer
 
 - `Always` draws the button with an empty queue.
 - `Printers` draws it when at least one printer exists. This is the default.
-- `Jobs` draws it only while at least one job exists.
+- `Jobs` draws it while at least one job exists, or while `panel_status` reports a queue warning or error for the tooltip.
 
 If the button is hidden, the view is a zero-size spacer. The panel slot remains until the applet is removed.
 
