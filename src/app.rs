@@ -534,21 +534,66 @@ impl AppModel {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct CancelAllOutcome {
+    total: usize,
+    succeeded: usize,
+    failures: Vec<(u32, String)>,
+}
+
+fn cancel_all_jobs<F>(printer: &str, job_ids: &[u32], mut cancel: F) -> CancelAllOutcome
+where
+    F: FnMut(&str, u32) -> Result<(), String>,
+{
+    let total = job_ids.len();
+    let mut succeeded = 0usize;
+    let mut failures = Vec::new();
+    for &job_id in job_ids {
+        match cancel(printer, job_id) {
+            Ok(()) => succeeded += 1,
+            Err(error) => failures.push((job_id, error)),
+        }
+    }
+    CancelAllOutcome {
+        total,
+        succeeded,
+        failures,
+    }
+}
+
+fn cancel_all_report_lines(outcome: &CancelAllOutcome) -> Vec<String> {
+    if outcome.failures.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "canceled {} of {} jobs",
+        outcome.succeeded, outcome.total
+    )];
+    for (job_id, error) in &outcome.failures {
+        lines.push(format!("job {job_id}: {error}"));
+    }
+    lines
+}
+
+fn report_cancel_all(outcome: &CancelAllOutcome) {
+    for line in cancel_all_report_lines(outcome) {
+        eprintln!("cosmic-printers: {line}");
+    }
+}
+
 fn confirm(pending: Pending) {
-    let result = match pending {
+    match pending {
         Pending::CancelJob {
             printer, job_id, ..
-        } => cups::cancel_job(&printer, job_id),
-        Pending::CancelAll { printer, job_ids } => {
-            let mut last = Ok(());
-            for job_id in job_ids {
-                last = cups::cancel_job(&printer, job_id);
+        } => {
+            if let Err(error) = cups::cancel_job(&printer, job_id) {
+                eprintln!("cosmic-printers: {error}");
             }
-            last
         }
-    };
-    if let Err(error) = result {
-        eprintln!("cosmic-printers: {error}");
+        Pending::CancelAll { printer, job_ids } => {
+            let outcome = cancel_all_jobs(&printer, &job_ids, cups::cancel_job);
+            report_cancel_all(&outcome);
+        }
     }
 }
 
@@ -616,4 +661,44 @@ fn cups_stream() -> impl futures::stream::Stream<Item = Message> + Send + 'stati
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CancelAllOutcome, cancel_all_jobs, cancel_all_report_lines};
+
+    #[test]
+    fn cancel_all_collects_every_failure() {
+        let outcome = cancel_all_jobs("office", &[1, 2, 3], |_printer, job_id| match job_id {
+            1 | 3 => Err(format!("failed to cancel job {job_id}")),
+            _ => Ok(()),
+        });
+        assert_eq!(
+            outcome,
+            CancelAllOutcome {
+                total: 3,
+                succeeded: 1,
+                failures: vec![
+                    (1, "failed to cancel job 1".to_string()),
+                    (3, "failed to cancel job 3".to_string()),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn cancel_all_reports_summary_and_each_error() {
+        let outcome = cancel_all_jobs("office", &[1, 2, 3], |_printer, job_id| match job_id {
+            1 | 3 => Err(format!("failed to cancel job {job_id}")),
+            _ => Ok(()),
+        });
+        assert_eq!(
+            cancel_all_report_lines(&outcome),
+            vec![
+                "canceled 1 of 3 jobs".to_string(),
+                "job 1: failed to cancel job 1".to_string(),
+                "job 3: failed to cancel job 3".to_string(),
+            ]
+        );
+    }
 }
