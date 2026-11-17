@@ -118,6 +118,7 @@ impl cosmic::Application for AppModel {
             self.config.show_icon,
             self.queue.printers.len(),
             status.job_count,
+            status.needs_attention(),
         ) {
             return widget::Space::new()
                 .width(Length::Fixed(0.0))

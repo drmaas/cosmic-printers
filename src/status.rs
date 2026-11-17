@@ -77,6 +77,13 @@ pub struct PanelStatus {
     pub job_count: usize,
 }
 
+impl PanelStatus {
+    #[must_use]
+    pub fn needs_attention(&self) -> bool {
+        matches!(self.tooltip, Tooltip::Warning { .. })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Tooltip {
     Printers,
@@ -216,11 +223,16 @@ pub fn panel_status(printers: &[StatusInput]) -> PanelStatus {
 }
 
 #[must_use]
-pub fn icon_visible(show: ShowIcon, printer_count: usize, job_count: usize) -> bool {
+pub fn icon_visible(
+    show: ShowIcon,
+    printer_count: usize,
+    job_count: usize,
+    needs_attention: bool,
+) -> bool {
     match show {
         ShowIcon::Always => true,
         ShowIcon::Printers => printer_count > 0,
-        ShowIcon::Jobs => job_count > 0,
+        ShowIcon::Jobs => job_count > 0 || needs_attention,
     }
 }
 
@@ -356,11 +368,34 @@ mod tests {
 
     #[test]
     fn visibility_follows_show_icon() {
-        assert!(icon_visible(ShowIcon::Always, 0, 0));
-        assert!(!icon_visible(ShowIcon::Printers, 0, 0));
-        assert!(icon_visible(ShowIcon::Printers, 1, 0));
-        assert!(!icon_visible(ShowIcon::Jobs, 2, 0));
-        assert!(icon_visible(ShowIcon::Jobs, 0, 1));
+        assert!(icon_visible(ShowIcon::Always, 0, 0, false));
+        assert!(!icon_visible(ShowIcon::Printers, 0, 0, false));
+        assert!(icon_visible(ShowIcon::Printers, 1, 0, false));
+        assert!(!icon_visible(ShowIcon::Jobs, 2, 0, false));
+        assert!(icon_visible(ShowIcon::Jobs, 0, 1, false));
+        assert!(icon_visible(ShowIcon::Jobs, 0, 0, true));
+        assert!(!icon_visible(ShowIcon::Jobs, 0, 0, false));
+    }
+
+    #[test]
+    fn jobs_visibility_includes_printer_warnings_with_no_jobs() {
+        let status = panel_status(&[printer("Office", PRINTER_STATE_IDLE, "offline-error", 0)]);
+        assert!(status.needs_attention());
+        assert!(icon_visible(
+            ShowIcon::Jobs,
+            1,
+            status.job_count,
+            status.needs_attention(),
+        ));
+
+        let idle = panel_status(&[printer("Office", PRINTER_STATE_IDLE, "none", 0)]);
+        assert!(!idle.needs_attention());
+        assert!(!icon_visible(
+            ShowIcon::Jobs,
+            1,
+            idle.job_count,
+            idle.needs_attention(),
+        ));
     }
 
     #[test]
