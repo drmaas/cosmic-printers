@@ -24,6 +24,7 @@ features = ["fluent-system", "desktop-requester"]
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"
+rev = "8fa46ccd444ca6521ce247ef62c63f9e207348e5"
 default-features = false
 features = [
     "applet",
