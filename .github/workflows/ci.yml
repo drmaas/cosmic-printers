@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install system dependencies
-        timeout-minutes: 3
+        timeout-minutes: 10
         run: |
           # The Ubuntu image sends apt to azure.archive.ubuntu.com. DNS for
           # that host failed for the whole job, and apt exited 100.
