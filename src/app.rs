@@ -37,6 +37,9 @@ enum Pending {
         printer: String,
         job_ids: Vec<u32>,
     },
+    FailureReport {
+        lines: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -251,8 +254,12 @@ impl cosmic::Application for AppModel {
                 self.pending = Some(Pending::CancelAll { printer, job_ids });
             }
             Message::ConfirmPending => {
-                if let Some(pending) = self.pending.take() {
-                    confirm(pending);
+                if let Some(pending) = self.pending.take()
+                    && let Some(outcome) = confirm(pending)
+                {
+                    self.pending = Some(Pending::FailureReport {
+                        lines: cancel_all_report_lines(&outcome),
+                    });
                 }
             }
             Message::DismissDialog => self.pending = None,
@@ -339,24 +346,38 @@ impl AppModel {
     }
 
     fn confirm_dialog(&self, pending: &Pending) -> Element<'_, Message> {
-        let (title, body) = match pending {
-            Pending::CancelJob { name, .. } => (
-                fl!("cancel-one-title"),
-                fl!("cancel-one-body", name = name.as_str()),
-            ),
-            Pending::CancelAll { .. } => (fl!("cancel-all-title"), fl!("cancel-all-body")),
-        };
-        widget::dialog()
-            .title(title)
-            .body(body)
-            .primary_action(
-                widget::button::destructive(fl!("cancel-printing"))
-                    .on_press(Message::ConfirmPending),
-            )
-            .secondary_action(
-                widget::button::standard(fl!("keep")).on_press(Message::DismissDialog),
-            )
-            .into()
+        match pending {
+            Pending::FailureReport { lines } => widget::dialog()
+                .title(fl!("cancel-all-report-title"))
+                .body(lines.join("\n"))
+                .primary_action(
+                    widget::button::standard(fl!("cancel-all-report-close"))
+                        .on_press(Message::DismissDialog),
+                )
+                .into(),
+            Pending::CancelJob { name, .. } => widget::dialog()
+                .title(fl!("cancel-one-title"))
+                .body(fl!("cancel-one-body", name = name.as_str()))
+                .primary_action(
+                    widget::button::destructive(fl!("cancel-printing"))
+                        .on_press(Message::ConfirmPending),
+                )
+                .secondary_action(
+                    widget::button::standard(fl!("keep")).on_press(Message::DismissDialog),
+                )
+                .into(),
+            Pending::CancelAll { .. } => widget::dialog()
+                .title(fl!("cancel-all-title"))
+                .body(fl!("cancel-all-body"))
+                .primary_action(
+                    widget::button::destructive(fl!("cancel-printing"))
+                        .on_press(Message::ConfirmPending),
+                )
+                .secondary_action(
+                    widget::button::standard(fl!("keep")).on_press(Message::DismissDialog),
+                )
+                .into(),
+        }
     }
 
     fn popup_list(&self, id: Id) -> Element<'_, Message> {
@@ -566,12 +587,17 @@ fn cancel_all_report_lines(outcome: &CancelAllOutcome) -> Vec<String> {
     if outcome.failures.is_empty() {
         return Vec::new();
     }
-    let mut lines = vec![format!(
-        "canceled {} of {} jobs",
-        outcome.succeeded, outcome.total
+    let mut lines = vec![fl!(
+        "cancel-all-partial-summary",
+        succeeded = count_arg(outcome.succeeded),
+        total = count_arg(outcome.total),
     )];
     for (job_id, error) in &outcome.failures {
-        lines.push(format!("job {job_id}: {error}"));
+        lines.push(fl!(
+            "cancel-all-job-error",
+            job_id = i64::from(*job_id),
+            error = error.as_str(),
+        ));
     }
     lines
 }
@@ -582,7 +608,7 @@ fn report_cancel_all(outcome: &CancelAllOutcome) {
     }
 }
 
-fn confirm(pending: Pending) {
+fn confirm(pending: Pending) -> Option<CancelAllOutcome> {
     match pending {
         Pending::CancelJob {
             printer, job_id, ..
@@ -590,11 +616,18 @@ fn confirm(pending: Pending) {
             if let Err(error) = cups::cancel_job(&printer, job_id) {
                 eprintln!("cosmic-printers: {error}");
             }
+            None
         }
         Pending::CancelAll { printer, job_ids } => {
             let outcome = cancel_all_jobs(&printer, &job_ids, cups::cancel_job);
-            report_cancel_all(&outcome);
+            if outcome.failures.is_empty() {
+                None
+            } else {
+                report_cancel_all(&outcome);
+                Some(outcome)
+            }
         }
+        Pending::FailureReport { .. } => None,
     }
 }
 
@@ -666,7 +699,18 @@ fn cups_stream() -> impl futures::stream::Stream<Item = Message> + Send + 'stati
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Once;
+
+    use crate::fl;
+    use crate::i18n;
+
     use super::{CancelAllOutcome, cancel_all_jobs, cancel_all_report_lines};
+
+    static INIT_I18N: Once = Once::new();
+
+    fn init_i18n() {
+        INIT_I18N.call_once(|| i18n::init(&[]));
+    }
 
     #[test]
     fn cancel_all_collects_every_failure() {
@@ -689,6 +733,7 @@ mod tests {
 
     #[test]
     fn cancel_all_reports_summary_and_each_error() {
+        init_i18n();
         let outcome = cancel_all_jobs("office", &[1, 2, 3], |_printer, job_id| match job_id {
             1 | 3 => Err(format!("failed to cancel job {job_id}")),
             _ => Ok(()),
@@ -696,9 +741,21 @@ mod tests {
         assert_eq!(
             cancel_all_report_lines(&outcome),
             vec![
-                "canceled 1 of 3 jobs".to_string(),
-                "job 1: failed to cancel job 1".to_string(),
-                "job 3: failed to cancel job 3".to_string(),
+                fl!(
+                    "cancel-all-partial-summary",
+                    succeeded = 1_i64,
+                    total = 3_i64,
+                ),
+                fl!(
+                    "cancel-all-job-error",
+                    job_id = 1_i64,
+                    error = "failed to cancel job 1",
+                ),
+                fl!(
+                    "cancel-all-job-error",
+                    job_id = 3_i64,
+                    error = "failed to cancel job 3",
+                ),
             ]
         );
     }
