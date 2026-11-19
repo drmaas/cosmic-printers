@@ -191,6 +191,12 @@ pub fn panel_status(printers: &[StatusInput]) -> PanelStatus {
                     error: warning.error,
                 });
             }
+        } else if !printer.accepting && !stopped && worst.is_none() {
+            worst = Some(PanelWarning {
+                printer: printer.display_name.clone(),
+                kind: WarningKind::NotAccepting,
+                error: false,
+            });
         }
     }
 
@@ -271,11 +277,21 @@ mod tests {
     };
 
     fn printer(name: &str, state: u32, reasons: &str, jobs: usize) -> StatusInput {
+        printer_with_accepting(name, state, reasons, true, jobs)
+    }
+
+    fn printer_with_accepting(
+        name: &str,
+        state: u32,
+        reasons: &str,
+        accepting: bool,
+        jobs: usize,
+    ) -> StatusInput {
         StatusInput {
             display_name: name.to_string(),
             state,
             state_reasons: reasons.to_string(),
-            accepting: true,
+            accepting,
             job_count: jobs,
         }
     }
@@ -395,6 +411,41 @@ mod tests {
             1,
             idle.job_count,
             idle.needs_attention(),
+        ));
+    }
+
+    #[test]
+    fn panel_attention_for_holding_jobs_without_ipp_reasons() {
+        let holding = panel_status(&[printer_with_accepting(
+            "Hold",
+            PRINTER_STATE_IDLE,
+            "none",
+            false,
+            0,
+        )]);
+        assert!(holding.needs_attention());
+        assert_eq!(holding.icon, ICON_WARNING);
+        assert_eq!(
+            holding.tooltip,
+            Tooltip::Warning {
+                printer: "Hold".to_string(),
+                kind: WarningKind::NotAccepting,
+            }
+        );
+        assert!(icon_visible(
+            ShowIcon::Jobs,
+            1,
+            holding.job_count,
+            holding.needs_attention(),
+        ));
+
+        let healthy = panel_status(&[printer("Office", PRINTER_STATE_IDLE, "none", 0)]);
+        assert!(!healthy.needs_attention());
+        assert!(!icon_visible(
+            ShowIcon::Jobs,
+            1,
+            healthy.job_count,
+            healthy.needs_attention(),
         ));
     }
 
