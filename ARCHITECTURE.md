@@ -91,7 +91,7 @@ Warnings come from IPP (Internet Printing Protocol) `printer-state-reasons`. `st
 
 `panel_status` chooses one icon and one tooltip for the whole queue.
 
-A stopped printer sets the icon and the tooltip. The tooltip names the first stopped printer in queue order. Otherwise the icon follows the strongest remaining state: an error reason, then a warning, then jobs, then idle.
+A stopped printer sets the icon and the tooltip. The tooltip names the first stopped printer in queue order. Otherwise the icon follows the strongest remaining state: an error reason, then a warning (including a printer that is not accepting jobs when no IPP reason matches), then jobs, then idle.
 
 The button draws the count next to the icon when `job_count` is greater than zero. The count is the sum of jobs on every printer.
 
