@@ -37,3 +37,7 @@ cancel-all-title = Cancel all jobs
 cancel-all-body = Do you really want to cancel all jobs?
 cancel-printing = Cancel printing
 keep = Keep
+cancel-all-report-title = Could not cancel all jobs
+cancel-all-report-close = OK
+cancel-all-partial-summary = Canceled { $succeeded } of { $total } jobs
+cancel-all-job-error = Job { $job_id }: { $error }
