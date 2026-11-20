@@ -8,7 +8,7 @@ use cosmic::widget;
 use futures::SinkExt;
 
 use crate::config::{self, Config, ShowIcon};
-use crate::cups::{self, ApplyResult, CupsSignal, Queue, QueueError, Tools};
+use crate::cups::{self, ApplyResult, BootstrapWarning, CupsSignal, Queue, QueueError, Tools};
 use crate::fl;
 use crate::status::{
     self, ICON_RUNNING, JOB_STATE_PROCESSING, PanelStatus, StatusInput, Tooltip, WarningKind,
@@ -387,6 +387,8 @@ impl AppModel {
             .width(Length::Fill);
         if let Some(error) = self.queue.error {
             column = column.push(widget::text(queue_error_text(error)));
+        } else if let Some(warning) = self.queue.warning {
+            column = column.push(widget::text(bootstrap_warning_text(warning)));
         }
 
         if self.queue.printers.is_empty() {
@@ -665,6 +667,12 @@ fn queue_error_text(error: QueueError) -> String {
     match error {
         QueueError::NoClient => fl!("no-cups-client"),
         QueueError::ListFailed => fl!("list-failed"),
+    }
+}
+
+fn bootstrap_warning_text(warning: BootstrapWarning) -> String {
+    match warning {
+        BootstrapWarning::JobsUnavailable => fl!("jobs-unavailable"),
     }
 }
 
