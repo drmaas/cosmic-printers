@@ -80,7 +80,10 @@ pub struct PanelStatus {
 impl PanelStatus {
     #[must_use]
     pub fn needs_attention(&self) -> bool {
-        matches!(self.tooltip, Tooltip::Warning { .. })
+        matches!(
+            self.tooltip,
+            Tooltip::Warning { .. } | Tooltip::JobsUnavailable
+        )
     }
 }
 
@@ -88,6 +91,7 @@ impl PanelStatus {
 pub enum Tooltip {
     Printers,
     Jobs(usize),
+    JobsUnavailable,
     Warning { printer: String, kind: WarningKind },
 }
 
@@ -156,12 +160,16 @@ pub fn printer_icon(state: u32, state_reasons: &str) -> &'static str {
 }
 
 #[must_use]
-pub fn panel_status(printers: &[StatusInput]) -> PanelStatus {
+pub fn panel_status(printers: &[StatusInput], jobs_degraded: bool) -> PanelStatus {
     let job_count = printers.iter().map(|printer| printer.job_count).sum();
     let mut worst: Option<PanelWarning> = None;
     let mut stopped = false;
+    let mut any_processing = false;
 
     for printer in printers {
+        if printer.state == PRINTER_STATE_PROCESSING {
+            any_processing = true;
+        }
         let warning = printer_warning(&printer.state_reasons);
         if printer.state == PRINTER_STATE_STOPPED {
             if !stopped {
@@ -204,7 +212,7 @@ pub fn panel_status(printers: &[StatusInput]) -> PanelStatus {
         ICON_ERROR
     } else if worst.is_some() {
         ICON_WARNING
-    } else if job_count > 0 {
+    } else if job_count > 0 || (jobs_degraded && any_processing) {
         ICON_PRINTING
     } else {
         ICON_IDLE
@@ -217,6 +225,8 @@ pub fn panel_status(printers: &[StatusInput]) -> PanelStatus {
         }
     } else if job_count > 0 {
         Tooltip::Jobs(job_count)
+    } else if jobs_degraded && any_processing {
+        Tooltip::JobsUnavailable
     } else {
         Tooltip::Printers
     };
@@ -323,7 +333,7 @@ mod tests {
 
     #[test]
     fn panel_prefers_stopped_then_error_then_jobs() {
-        let idle = panel_status(&[printer("Office", PRINTER_STATE_IDLE, "none", 0)]);
+        let idle = panel_status(&[printer("Office", PRINTER_STATE_IDLE, "none", 0)], false);
         assert_eq!(
             idle,
             PanelStatus {
@@ -333,16 +343,22 @@ mod tests {
             }
         );
 
-        let printing = panel_status(&[printer("Office", PRINTER_STATE_PROCESSING, "none", 2)]);
+        let printing = panel_status(
+            &[printer("Office", PRINTER_STATE_PROCESSING, "none", 2)],
+            false,
+        );
         assert_eq!(printing.icon, ICON_PRINTING);
         assert_eq!(printing.tooltip, Tooltip::Jobs(2));
 
-        let low = panel_status(&[printer(
-            "Office",
-            PRINTER_STATE_IDLE,
-            "media-low-warning",
-            1,
-        )]);
+        let low = panel_status(
+            &[printer(
+                "Office",
+                PRINTER_STATE_IDLE,
+                "media-low-warning",
+                1,
+            )],
+            false,
+        );
         assert_eq!(low.icon, ICON_WARNING);
         assert_eq!(
             low.tooltip,
@@ -352,10 +368,13 @@ mod tests {
             }
         );
 
-        let stopped = panel_status(&[
-            printer("Office", PRINTER_STATE_IDLE, "toner-empty-error", 1),
-            printer("Photo", PRINTER_STATE_STOPPED, "none", 0),
-        ]);
+        let stopped = panel_status(
+            &[
+                printer("Office", PRINTER_STATE_IDLE, "toner-empty-error", 1),
+                printer("Photo", PRINTER_STATE_STOPPED, "none", 0),
+            ],
+            false,
+        );
         assert_eq!(stopped.icon, ICON_ERROR);
         assert_eq!(
             stopped.tooltip,
@@ -369,10 +388,13 @@ mod tests {
 
     #[test]
     fn later_error_replaces_an_earlier_warning() {
-        let status = panel_status(&[
-            printer("Office", PRINTER_STATE_IDLE, "media-low-warning", 0),
-            printer("Photo", PRINTER_STATE_IDLE, "offline-error", 0),
-        ]);
+        let status = panel_status(
+            &[
+                printer("Office", PRINTER_STATE_IDLE, "media-low-warning", 0),
+                printer("Photo", PRINTER_STATE_IDLE, "offline-error", 0),
+            ],
+            false,
+        );
         assert_eq!(
             status.tooltip,
             Tooltip::Warning {
@@ -395,7 +417,10 @@ mod tests {
 
     #[test]
     fn jobs_visibility_includes_printer_warnings_with_no_jobs() {
-        let status = panel_status(&[printer("Office", PRINTER_STATE_IDLE, "offline-error", 0)]);
+        let status = panel_status(
+            &[printer("Office", PRINTER_STATE_IDLE, "offline-error", 0)],
+            false,
+        );
         assert!(status.needs_attention());
         assert!(icon_visible(
             ShowIcon::Jobs,
@@ -404,7 +429,7 @@ mod tests {
             status.needs_attention(),
         ));
 
-        let idle = panel_status(&[printer("Office", PRINTER_STATE_IDLE, "none", 0)]);
+        let idle = panel_status(&[printer("Office", PRINTER_STATE_IDLE, "none", 0)], false);
         assert!(!idle.needs_attention());
         assert!(!icon_visible(
             ShowIcon::Jobs,
@@ -416,13 +441,16 @@ mod tests {
 
     #[test]
     fn panel_attention_for_holding_jobs_without_ipp_reasons() {
-        let holding = panel_status(&[printer_with_accepting(
-            "Hold",
-            PRINTER_STATE_IDLE,
-            "none",
+        let holding = panel_status(
+            &[printer_with_accepting(
+                "Hold",
+                PRINTER_STATE_IDLE,
+                "none",
+                false,
+                0,
+            )],
             false,
-            0,
-        )]);
+        );
         assert!(holding.needs_attention());
         assert_eq!(holding.icon, ICON_WARNING);
         assert_eq!(
@@ -439,13 +467,31 @@ mod tests {
             holding.needs_attention(),
         ));
 
-        let healthy = panel_status(&[printer("Office", PRINTER_STATE_IDLE, "none", 0)]);
+        let healthy = panel_status(&[printer("Office", PRINTER_STATE_IDLE, "none", 0)], false);
         assert!(!healthy.needs_attention());
         assert!(!icon_visible(
             ShowIcon::Jobs,
             1,
             healthy.job_count,
             healthy.needs_attention(),
+        ));
+    }
+
+    #[test]
+    fn degraded_jobs_show_printing_while_printer_processing() {
+        let status = panel_status(
+            &[printer("Office", PRINTER_STATE_PROCESSING, "none", 0)],
+            true,
+        );
+        assert_ne!(status.icon, ICON_IDLE);
+        assert_eq!(status.icon, ICON_PRINTING);
+        assert_eq!(status.tooltip, Tooltip::JobsUnavailable);
+        assert!(status.needs_attention());
+        assert!(icon_visible(
+            ShowIcon::Jobs,
+            1,
+            status.job_count,
+            status.needs_attention(),
         ));
     }
 

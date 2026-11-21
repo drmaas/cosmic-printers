@@ -297,12 +297,17 @@ impl AppModel {
                 job_count: printer.jobs.len(),
             })
             .collect::<Vec<_>>();
-        panel_status(&inputs)
+        let jobs_degraded = matches!(
+            self.queue.warning,
+            Some(BootstrapWarning::JobsUnavailable)
+        );
+        panel_status(&inputs, jobs_degraded)
     }
 
     fn tooltip_text(&self, status: &PanelStatus) -> String {
         match &status.tooltip {
             Tooltip::Printers => fl!("tooltip-printers"),
+            Tooltip::JobsUnavailable => fl!("jobs-unavailable"),
             Tooltip::Jobs(count) => fl!("job-count", count = count_arg(*count)),
             Tooltip::Warning { printer, kind } => {
                 let message = warning_text(*kind);
