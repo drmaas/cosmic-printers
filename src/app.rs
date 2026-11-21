@@ -297,10 +297,7 @@ impl AppModel {
                 job_count: printer.jobs.len(),
             })
             .collect::<Vec<_>>();
-        let jobs_degraded = matches!(
-            self.queue.warning,
-            Some(BootstrapWarning::JobsUnavailable)
-        );
+        let jobs_degraded = matches!(self.queue.warning, Some(BootstrapWarning::JobsUnavailable));
         panel_status(&inputs, jobs_degraded)
     }
 
