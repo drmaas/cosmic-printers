@@ -39,6 +39,8 @@ Bootstrap runs on a blocking thread. Every `lpstat` call sets `LC_ALL=C` and `LA
 
 The destination list and the printer list can both fail. If nothing was parsed, the error is `QueueError::ListFailed`.
 
+Other `lpstat` calls can fail on their own. When printers were parsed but the job list failed, the queue keeps the printers and sets `BootstrapWarning::JobsUnavailable`. The popup shows a short notice above the list, similar to a queue error but without clearing the printers. A later bootstrap or any CUPS notifier event clears the warning. `QueueError::NoClient` and `ListFailed` are unchanged.
+
 Job titles are empty after bootstrap. The popup shows them as unknown until a job signal supplies a name.
 
 Tool detection looks for `system-config-printer` on `PATH`. It also asks the session bus whether `org.fedoraproject.Config.Printing` is owned or activatable.
@@ -81,7 +83,7 @@ sequenceDiagram
 
 ## Queue
 
-`Queue` is an `IndexMap` of printers, plus an optional error. The map key is the CUPS printer name. Each `Printer` has an `IndexMap` of jobs keyed by job id. Map order is the order in the popup.
+`Queue` is an `IndexMap` of printers, plus an optional error and an optional bootstrap warning. The map key is the CUPS printer name. Each `Printer` has an `IndexMap` of jobs keyed by job id. Map order is the order in the popup.
 
 Display names replace `_` with a space. Command ids use `{printer}-{job id}`. The printer URI stays empty until a notifier signal sets it.
 

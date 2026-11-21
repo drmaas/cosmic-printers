@@ -31,6 +31,7 @@ stopped = Stopped
 not-accepting = Not accepting jobs
 no-cups-client = CUPS client tools are not installed.
 list-failed = Could not list printers.
+jobs-unavailable = Could not list print jobs. Live updates may still show new jobs.
 cancel-one-title = Cancel print job
 cancel-one-body = Do you want to cancel printing of '{ $name }'?
 cancel-all-title = Cancel all jobs

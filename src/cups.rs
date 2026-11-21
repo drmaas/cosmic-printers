@@ -24,6 +24,12 @@ pub enum QueueError {
     ListFailed,
 }
 
+/// Non-fatal bootstrap issue when printer data is still usable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapWarning {
+    JobsUnavailable,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
     pub id: u32,
@@ -61,6 +67,7 @@ impl Printer {
 pub struct Queue {
     pub printers: IndexMap<String, Printer>,
     pub error: Option<QueueError>,
+    pub warning: Option<BootstrapWarning>,
     /// Queue names from `lpstat -p`. While non-empty, discovered-only destinations are hidden.
     installed_queues: HashSet<String>,
     /// Filtered `lpstat -e` names mapped onto an installed queue with the same device.
@@ -72,6 +79,7 @@ impl Queue {
         Self {
             printers: IndexMap::new(),
             error: None,
+            warning: None,
             installed_queues: HashSet::new(),
             destination_aliases: IndexMap::new(),
         }
@@ -81,6 +89,7 @@ impl Queue {
         Self {
             printers: IndexMap::new(),
             error: Some(error),
+            warning: None,
             installed_queues: HashSet::new(),
             destination_aliases: IndexMap::new(),
         }
@@ -93,6 +102,7 @@ impl Queue {
                 self.installed_queues.clear();
                 self.destination_aliases.clear();
                 self.error = None;
+                self.warning = None;
                 ApplyResult::Reset
             }
             CupsSignal::ServerStopped => {
@@ -210,6 +220,7 @@ impl Queue {
 
     fn note_signal(&mut self) {
         self.error = None;
+        self.warning = None;
     }
 
     fn refresh_installed_queues(&mut self) {
@@ -533,13 +544,31 @@ fn read_queue() -> Queue {
         command_text(&jobs),
         command_text(&devices),
     );
+    apply_bootstrap_status(&mut queue, &destinations, &printers, &jobs);
+    queue
+}
+
+fn apply_bootstrap_status(
+    queue: &mut Queue,
+    destinations: &CommandResult,
+    printers: &CommandResult,
+    jobs: &CommandResult,
+) {
     if !matches!(destinations, CommandResult::Ok(_))
         && !matches!(printers, CommandResult::Ok(_))
         && queue.printers.is_empty()
     {
         queue.error = Some(QueueError::ListFailed);
+        return;
     }
-    queue
+    if queue.error.is_some() || queue.printers.is_empty() {
+        return;
+    }
+    if matches!(jobs, CommandResult::Ok(_)) {
+        queue.warning = None;
+    } else {
+        queue.warning = Some(BootstrapWarning::JobsUnavailable);
+    }
 }
 
 fn command_text(result: &CommandResult) -> &str {
@@ -1061,9 +1090,10 @@ fn decode_job_removed(message: &zbus::Message) -> Option<CupsSignal> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplyResult, CupsSignal, Job, Queue, device_identities, parse_alerts_line,
-        parse_destination_list, parse_device_uri_map, parse_job_line, parse_printer_line,
-        queue_from_outputs, queue_printer_names, send_job_to_front,
+        ApplyResult, BootstrapWarning, CommandResult, CupsSignal, Job, Queue,
+        apply_bootstrap_status, device_identities, parse_alerts_line, parse_destination_list,
+        parse_device_uri_map, parse_job_line, parse_printer_line, queue_from_outputs,
+        queue_printer_names, send_job_to_front,
     };
     use crate::status::{
         JOB_STATE_CANCELED, JOB_STATE_PROCESSING, PRINTER_STATE_IDLE, PRINTER_STATE_STOPPED,
@@ -1332,6 +1362,54 @@ HP_Officejet_5740_series_E156B4-2          daniel            1024   Tue Nov 10 1
             parse_device_uri_map("device for A: ipp://host/a\nmalformed line\n device for B: \n");
         assert_eq!(map.len(), 1);
         assert_eq!(map["A"], "ipp://host/a");
+    }
+
+    #[test]
+    fn bootstrap_warning_when_jobs_fail_but_printers_load() {
+        let destinations = "Office_Laser\n";
+        let printers = "\
+printer Office_Laser is idle.  enabled since Tue Nov 10 10:00:00 2026
+";
+        let mut queue = queue_from_outputs(destinations, printers, "", "");
+        apply_bootstrap_status(
+            &mut queue,
+            &CommandResult::Ok(destinations.to_string()),
+            &CommandResult::Ok(printers.to_string()),
+            &CommandResult::Failed("lpstat -o failed".to_string()),
+        );
+        assert!(queue.error.is_none());
+        assert_eq!(queue.warning, Some(BootstrapWarning::JobsUnavailable));
+        assert_eq!(queue.printers.len(), 1);
+    }
+
+    #[test]
+    fn bootstrap_clears_jobs_warning_after_successful_job_list() {
+        let destinations = "Office_Laser\n";
+        let printers = "\
+printer Office_Laser is idle.  enabled since Tue Nov 10 10:00:00 2026
+";
+        let mut queue = queue_from_outputs(destinations, printers, "", "");
+        queue.warning = Some(BootstrapWarning::JobsUnavailable);
+        apply_bootstrap_status(
+            &mut queue,
+            &CommandResult::Ok(destinations.to_string()),
+            &CommandResult::Ok(printers.to_string()),
+            &CommandResult::Ok(String::new()),
+        );
+        assert!(queue.warning.is_none());
+    }
+
+    #[test]
+    fn list_failed_when_destination_and_printer_lists_both_fail() {
+        let mut queue = Queue::empty();
+        apply_bootstrap_status(
+            &mut queue,
+            &CommandResult::Failed("lpstat -e failed".to_string()),
+            &CommandResult::Failed("lpstat -p failed".to_string()),
+            &CommandResult::Failed("lpstat -o failed".to_string()),
+        );
+        assert_eq!(queue.error, Some(super::QueueError::ListFailed));
+        assert!(queue.warning.is_none());
     }
 
     #[test]
