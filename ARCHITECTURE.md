@@ -109,7 +109,13 @@ The choice is saved with cosmic-config under the app id, config version 1.
 
 ## Popup
 
-The popup is a Wayland window anchored to the panel button. Closing it drops any pending confirm.
+The popup is a Wayland window anchored to the panel button. Confirm and report state live in `Option<Pending>` in `src/app.rs`: `CancelJob`, `CancelAll`, or `FailureReport`.
+
+Cancel job and cancel all first set `CancelJob` or `CancelAll` and show a confirm dialog. `Message::ConfirmPending` runs the action synchronously: one `cancel` for a job, or a batch of `cancel` calls for cancel-all. When every cancel-all succeeds, pending clears. When any cancel-all fails, `confirm` keeps a `CancelAllOutcome` and the app stores `Pending::FailureReport` with lines from `cancel_all_report_lines` (Fluent `cancel-all-partial-summary`, `cancel-all-job-error`, dialog title `cancel-all-report-title`, OK label `cancel-all-report-close`).
+
+`Message::DismissDialog` clears pending, whether that is a confirm (`Keep` on cancel job or cancel all) or the failure report (`OK`).
+
+`Message::PopupClosed` runs when the popup is dismissed externally (click outside, close request). It drops `CancelJob` and `CancelAll` but keeps `FailureReport`, so a partial cancel-all report appears again the next time the popup opens until the user presses OK. Closing via the panel button toggle or `close_popup` (for example opening printer settings or properties) still clears all pending state.
 
 Each printer row shows an icon, the display name, and a warning line when `row_notice` returns one. The name button runs `system-config-printer --show-jobs {name}` when that program exists. With no printer argument, the Printers button opens the same program for the full list. Both stay disabled when `system-config-printer` is not on `PATH`.
 
