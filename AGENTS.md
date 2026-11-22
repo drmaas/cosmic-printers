@@ -29,7 +29,7 @@ just run
 - `src/config.rs` stores `ShowIcon` with `cosmic-config`.
 - `i18n/en/cosmic_printers.ftl` is the English catalog. The `fl!` macro only accepts string literals, so new copy needs a match arm in `app.rs` as well as an `.ftl` line.
 
-`libcosmic` comes from `https://github.com/pop-os/libcosmic.git`. Commit `Cargo.lock` when dependencies change.
+`libcosmic` comes from `https://github.com/pop-os/libcosmic` (same git URL as transitive COSMIC crates such as `cosmic-panel-config`). Pin the commit in `Cargo.lock`; do not add `rev =` on the direct dependency, because that splits Cargo’s git source identity and duplicates iced workspace crates. After lock changes, confirm `cargo tree -d` shows no duplicate `iced_core` / `cosmic-config` from libcosmic. Commit `Cargo.lock` when dependencies change.
 
 ## CUPS
 
