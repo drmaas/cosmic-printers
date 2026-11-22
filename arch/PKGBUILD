@@ -2,8 +2,10 @@
 #
 # Arch Linux package for cosmic-printers.
 #
-# .github/workflows/release-arch.yml builds this in an Arch container. To build
-# it by hand on Arch, run `makepkg -si` in this directory. That downloads the
+# .github/workflows/release-arch.yml builds this in an Arch container with a
+# shared Cargo cache (CARGO_HOME and CARGO_TARGET_DIR outside the makepkg src
+# tree). Pushes to main that touch Rust sources warm that cache for tag releases.
+# To build it by hand on Arch, run `makepkg -si` in this directory. That downloads the
 # tagged source from GitHub. To build the working tree instead, put an archive
 # of it here under the name makepkg would download:
 #
@@ -63,21 +65,21 @@ prepare() {
 build() {
     cd "$pkgname-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
-    export CARGO_TARGET_DIR=target
+    export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
     cargo build --frozen --release
 }
 
 check() {
     cd "$pkgname-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
-    export CARGO_TARGET_DIR=target
+    export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
     cargo test --frozen --release
 }
 
 package() {
     cd "$pkgname-$pkgver"
 
-    install -Dm0755 target/release/cosmic-printers \
+    install -Dm0755 "${CARGO_TARGET_DIR:-target}/release/cosmic-printers" \
         "$pkgdir/usr/bin/cosmic-printers"
     install -Dm0644 resources/io.github.drmaas.CosmicPrinters.desktop \
         "$pkgdir/usr/share/applications/io.github.drmaas.CosmicPrinters.desktop"
