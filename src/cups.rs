@@ -30,6 +30,14 @@ pub enum BootstrapWarning {
     JobsUnavailable,
 }
 
+/// Whether the in-memory job list is trusted for panel status and the popup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JobListTrust {
+    #[default]
+    Full,
+    Degraded,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
     pub id: u32,
@@ -67,7 +75,7 @@ impl Printer {
 pub struct Queue {
     pub printers: IndexMap<String, Printer>,
     pub error: Option<QueueError>,
-    pub warning: Option<BootstrapWarning>,
+    pub job_list_trust: JobListTrust,
     /// Queue names from `lpstat -p`. While non-empty, discovered-only destinations are hidden.
     installed_queues: HashSet<String>,
     /// Filtered `lpstat -e` names mapped onto an installed queue with the same device.
@@ -79,7 +87,7 @@ impl Queue {
         Self {
             printers: IndexMap::new(),
             error: None,
-            warning: None,
+            job_list_trust: JobListTrust::Full,
             installed_queues: HashSet::new(),
             destination_aliases: IndexMap::new(),
         }
@@ -89,7 +97,7 @@ impl Queue {
         Self {
             printers: IndexMap::new(),
             error: Some(error),
-            warning: None,
+            job_list_trust: JobListTrust::Full,
             installed_queues: HashSet::new(),
             destination_aliases: IndexMap::new(),
         }
@@ -102,7 +110,7 @@ impl Queue {
                 self.installed_queues.clear();
                 self.destination_aliases.clear();
                 self.error = None;
-                self.warning = None;
+                self.job_list_trust = JobListTrust::Full;
                 ApplyResult::Reset
             }
             CupsSignal::ServerStopped => {
@@ -220,7 +228,6 @@ impl Queue {
 
     fn note_signal(&mut self) {
         self.error = None;
-        self.warning = None;
     }
 
     fn refresh_installed_queues(&mut self) {
@@ -565,9 +572,9 @@ fn apply_bootstrap_status(
         return;
     }
     if matches!(jobs, CommandResult::Ok(_)) {
-        queue.warning = None;
+        queue.job_list_trust = JobListTrust::Full;
     } else {
-        queue.warning = Some(BootstrapWarning::JobsUnavailable);
+        queue.job_list_trust = JobListTrust::Degraded;
     }
 }
 
@@ -1090,13 +1097,14 @@ fn decode_job_removed(message: &zbus::Message) -> Option<CupsSignal> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplyResult, BootstrapWarning, CommandResult, CupsSignal, Job, Queue,
-        apply_bootstrap_status, device_identities, parse_alerts_line, parse_destination_list,
-        parse_device_uri_map, parse_job_line, parse_printer_line, queue_from_outputs,
-        queue_printer_names, send_job_to_front,
+        ApplyResult, CommandResult, CupsSignal, Job, JobListTrust, Queue, apply_bootstrap_status,
+        device_identities, parse_alerts_line, parse_destination_list, parse_device_uri_map,
+        parse_job_line, parse_printer_line, queue_from_outputs, queue_printer_names,
+        send_job_to_front,
     };
     use crate::status::{
-        JOB_STATE_CANCELED, JOB_STATE_PROCESSING, PRINTER_STATE_IDLE, PRINTER_STATE_STOPPED,
+        ICON_IDLE, ICON_PRINTING, JOB_STATE_CANCELED, JOB_STATE_PROCESSING, PRINTER_STATE_IDLE,
+        PRINTER_STATE_PROCESSING, PRINTER_STATE_STOPPED, StatusInput, Tooltip, panel_status,
     };
     use indexmap::IndexMap;
 
@@ -1378,7 +1386,7 @@ printer Office_Laser is idle.  enabled since Tue Nov 10 10:00:00 2026
             &CommandResult::Failed("lpstat -o failed".to_string()),
         );
         assert!(queue.error.is_none());
-        assert_eq!(queue.warning, Some(BootstrapWarning::JobsUnavailable));
+        assert_eq!(queue.job_list_trust, JobListTrust::Degraded);
         assert_eq!(queue.printers.len(), 1);
     }
 
@@ -1389,14 +1397,14 @@ printer Office_Laser is idle.  enabled since Tue Nov 10 10:00:00 2026
 printer Office_Laser is idle.  enabled since Tue Nov 10 10:00:00 2026
 ";
         let mut queue = queue_from_outputs(destinations, printers, "", "");
-        queue.warning = Some(BootstrapWarning::JobsUnavailable);
+        queue.job_list_trust = JobListTrust::Degraded;
         apply_bootstrap_status(
             &mut queue,
             &CommandResult::Ok(destinations.to_string()),
             &CommandResult::Ok(printers.to_string()),
             &CommandResult::Ok(String::new()),
         );
-        assert!(queue.warning.is_none());
+        assert_eq!(queue.job_list_trust, JobListTrust::Full);
     }
 
     #[test]
@@ -1409,7 +1417,134 @@ printer Office_Laser is idle.  enabled since Tue Nov 10 10:00:00 2026
             &CommandResult::Failed("lpstat -o failed".to_string()),
         );
         assert_eq!(queue.error, Some(super::QueueError::ListFailed));
-        assert!(queue.warning.is_none());
+        assert_eq!(queue.job_list_trust, JobListTrust::Full);
+    }
+
+    fn processing_queue_without_jobs(trust: JobListTrust) -> Queue {
+        let mut queue = Queue::empty();
+        queue.job_list_trust = trust;
+        queue.handle_signal(CupsSignal::PrinterUpsert {
+            name: "Office".to_string(),
+            uri: String::new(),
+            state: PRINTER_STATE_PROCESSING,
+            reasons: "none".to_string(),
+            accepting: true,
+            newly_added: false,
+        });
+        queue
+    }
+
+    fn panel_inputs(queue: &Queue) -> Vec<StatusInput> {
+        queue
+            .printers
+            .values()
+            .map(|printer| StatusInput {
+                display_name: printer.display_name.clone(),
+                state: printer.state,
+                state_reasons: printer.state_reasons.clone(),
+                accepting: printer.accepting,
+                job_count: printer.jobs.len(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn degraded_trust_with_processing_printer_shows_printing_icon() {
+        let queue = processing_queue_without_jobs(JobListTrust::Degraded);
+        assert!(queue.printers["Office"].jobs.is_empty());
+        let status = panel_status(&panel_inputs(&queue), true);
+        assert_eq!(status.icon, ICON_PRINTING);
+        assert_eq!(status.tooltip, Tooltip::JobsUnavailable);
+        assert_eq!(status.job_count, 0);
+    }
+
+    #[test]
+    fn notifier_signals_preserve_job_list_trust() {
+        struct Case {
+            name: &'static str,
+            initial: JobListTrust,
+            signal: CupsSignal,
+            expected_trust: JobListTrust,
+            jobs_degraded: bool,
+            expected_icon: &'static str,
+        }
+
+        let cases = [
+            Case {
+                name: "printer modified keeps degraded",
+                initial: JobListTrust::Degraded,
+                signal: CupsSignal::PrinterUpsert {
+                    name: "Office".to_string(),
+                    uri: String::new(),
+                    state: PRINTER_STATE_PROCESSING,
+                    reasons: "none".to_string(),
+                    accepting: true,
+                    newly_added: false,
+                },
+                expected_trust: JobListTrust::Degraded,
+                jobs_degraded: true,
+                expected_icon: ICON_PRINTING,
+            },
+            Case {
+                name: "printer modified keeps full",
+                initial: JobListTrust::Full,
+                signal: CupsSignal::PrinterUpsert {
+                    name: "Office".to_string(),
+                    uri: String::new(),
+                    state: PRINTER_STATE_IDLE,
+                    reasons: "none".to_string(),
+                    accepting: true,
+                    newly_added: false,
+                },
+                expected_trust: JobListTrust::Full,
+                jobs_degraded: false,
+                expected_icon: ICON_IDLE,
+            },
+            Case {
+                name: "job upsert keeps degraded",
+                initial: JobListTrust::Degraded,
+                signal: CupsSignal::JobUpsert {
+                    printer: "Office".to_string(),
+                    printer_uri: String::new(),
+                    printer_state: PRINTER_STATE_PROCESSING,
+                    printer_reasons: "none".to_string(),
+                    accepting: true,
+                    job_id: 9,
+                    job_state: 3,
+                    job_name: "notes.pdf".to_string(),
+                },
+                expected_trust: JobListTrust::Degraded,
+                jobs_degraded: true,
+                expected_icon: ICON_PRINTING,
+            },
+            Case {
+                name: "job removal keeps degraded",
+                initial: JobListTrust::Degraded,
+                signal: CupsSignal::JobRemoved {
+                    printer: "Office".to_string(),
+                    printer_uri: String::new(),
+                    printer_state: PRINTER_STATE_PROCESSING,
+                    printer_reasons: "none".to_string(),
+                    accepting: true,
+                    job_id: 9,
+                },
+                expected_trust: JobListTrust::Degraded,
+                jobs_degraded: true,
+                expected_icon: ICON_PRINTING,
+            },
+        ];
+
+        for case in cases {
+            let mut queue = processing_queue_without_jobs(case.initial);
+            queue.handle_signal(case.signal);
+            assert_eq!(
+                queue.job_list_trust, case.expected_trust,
+                "{}: job_list_trust",
+                case.name
+            );
+            let status = panel_status(&panel_inputs(&queue), case.jobs_degraded);
+            assert_eq!(status.icon, case.expected_icon, "{}: icon", case.name);
+        }
     }
 
     #[test]
