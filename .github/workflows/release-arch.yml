@@ -3,16 +3,38 @@ name: Release Arch package
 on:
   push:
     tags: ['v*']
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'resources/**'
+      - 'i18n/**'
+      - 'arch/**'
+      - '.github/workflows/release-arch.yml'
   workflow_dispatch:
+
+concurrency:
+  group: release-arch-${{ github.ref_type == 'tag' && format('tag-{0}', github.ref_name) || 'cache-warm' }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: write
+
+env:
+  CARGO_CACHE_ROOT: ${{ github.workspace }}/.cargo-cache
+  CARGO_HOME: ${{ github.workspace }}/.cargo-cache/home
+  CARGO_TARGET_DIR: ${{ github.workspace }}/.cargo-cache/target
 
 jobs:
   build-arch:
     runs-on: ubuntu-24.04
     container: archlinux:latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Install the toolchain and build dependencies
         run: |
           pacman -Syu --noconfirm --needed \
@@ -20,9 +42,22 @@ jobs:
             pkgconf wayland libxkbcommon fontconfig freetype2 expat \
             vulkan-headers mesa libinput dbus cups
 
-      - uses: actions/checkout@v4
+      - name: Record Rust toolchain version
+        id: rustc
+        run: echo "version=$(rustc --version | tr ' ' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
         with:
-          fetch-depth: 0
+          path: |
+            ${{ env.CARGO_HOME }}/registry/index
+            ${{ env.CARGO_HOME }}/registry/cache
+            ${{ env.CARGO_HOME }}/git/db
+            ${{ env.CARGO_TARGET_DIR }}
+          key: release-arch-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ steps.rustc.outputs.version }}
+          restore-keys: |
+            release-arch-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-
+            release-arch-${{ runner.os }}-
 
       - name: Check the versions agree
         if: startsWith(github.ref, 'refs/tags/v')
@@ -30,18 +65,40 @@ jobs:
 
       - name: Build the package
         run: |
+          set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
+          if ! id builder &>/dev/null; then
+            useradd -m builder
+          fi
+          chown -R builder:builder "$CARGO_CACHE_ROOT"
+          chmod -R a+rX "$CARGO_CACHE_ROOT"
+
           pkgver=$(sed -n 's/^pkgver=//p' arch/PKGBUILD)
           git archive --prefix="cosmic-printers-$pkgver/" \
             -o arch/"cosmic-printers-$pkgver.tar.gz" HEAD
-          useradd -m builder
           chown -R builder arch
-          su builder -c 'cd arch && makepkg --noconfirm'
+
+          su builder -c "
+            export CARGO_HOME='$CARGO_HOME'
+            export CARGO_TARGET_DIR='$CARGO_TARGET_DIR'
+            cd arch && makepkg --noconfirm --nocheck
+          "
           mkdir -p dist
           cp arch/*.pkg.tar.zst dist/
           ls -l dist/
 
+      - name: Trim incremental build metadata from cache
+        if: always()
+        run: |
+          if [ -d "$CARGO_TARGET_DIR" ]; then
+            find "$CARGO_TARGET_DIR" -type d -name incremental -print0 \
+              | xargs -0 rm -rf
+          fi
+          chmod -R a+rX "$CARGO_CACHE_ROOT" 2>/dev/null || true
+
       - name: Upload the package as a build artifact
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: cosmic-printers-arch

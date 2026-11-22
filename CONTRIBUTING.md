@@ -29,7 +29,7 @@ git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-4. Pushing a `v*` tag starts `.github/workflows/release-arch.yml`. The job runs `scripts/check-version.sh` against the tag, builds `cosmic-printers-*.pkg.tar.zst`, and publishes a GitHub Release with that package attached. Release notes come from `gh release create --generate-notes`.
+4. Pushing a `v*` tag starts `.github/workflows/release-arch.yml`. The job runs `scripts/check-version.sh` against the tag, builds `cosmic-printers-*.pkg.tar.zst`, and publishes a GitHub Release with that package attached. Release notes come from `gh release create --generate-notes`. The same workflow also runs on pushes to `main` when Rust sources or the PKGBUILD change, to warm a shared Cargo cache that tagged release builds restore. CI on `main` already runs `cargo test --locked`, so the release job passes `--nocheck` to `makepkg`.
 5. Confirm the Release page has the `.pkg.tar.zst` file. Installers follow the steps in `README.md`.
 
 You can also run the Arch workflow by hand with `workflow_dispatch`. That builds and uploads the package as a workflow artifact. It only creates or updates a GitHub Release when the run is on a tag.
