@@ -40,3 +40,7 @@ install: build-release
 
 uninstall:
     rm -f {{ bin-dst }} {{ desktop-dst }} {{ metainfo-dst }} {{ icon-dst }}
+
+# Cut a release: bump versions, commit, tag, push. Example: just release 0.1.5
+release version:
+    ./scripts/release.sh {{ version }}

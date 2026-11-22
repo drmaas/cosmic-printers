@@ -18,19 +18,17 @@ Thanks for looking at the printer applet. Issues and pull requests are welcome.
 
 The Arch package is the only release artifact. Do not add deb, rpm, Nix, or Flatpak packaging unless that is an explicit project decision.
 
-Maintainers cut a release like this:
-
-1. On `main`, set the same version in `Cargo.toml` (`version`) and `arch/PKGBUILD` (`pkgver`). Use `X.Y.Z` with no `v` prefix in those files. Set `pkgrel` to `1` for a new version.
-2. Merge that change to `main`.
-3. Tag the release commit and push the tag:
+Maintainers cut a release from a clean, up-to-date `main` like this:
 
 ```sh
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
+./scripts/release.sh X.Y.Z
+# or: just release X.Y.Z
+# preview only: ./scripts/release.sh --dry-run X.Y.Z
 ```
 
-4. Pushing a `v*` tag starts `.github/workflows/release-arch.yml`. The job runs `scripts/check-version.sh` against the tag, builds `cosmic-printers-*.pkg.tar.zst`, and publishes a GitHub Release with that package attached. Release notes come from `gh release create --generate-notes`. The same workflow also runs on pushes to `main` when Rust sources or the PKGBUILD change, to warm a shared Cargo cache that tagged release builds restore. CI on `main` already runs `cargo test --locked`, so the release job passes `--nocheck` to `makepkg`.
-5. Confirm the Release page has the `.pkg.tar.zst` file. Installers follow the steps in `README.md`.
+The script sets the same version in `Cargo.toml`, `arch/PKGBUILD` (`pkgver`, `pkgrel=1`), and `Cargo.lock`, commits `chore(release): X.Y.Z`, creates annotated tag `vX.Y.Z`, and pushes the commit and tag. Pushing a `v*` tag starts `.github/workflows/release-arch.yml`. The job runs `scripts/check-version.sh` against the tag, builds `cosmic-printers-*.pkg.tar.zst`, and publishes a GitHub Release with that package attached. Release notes come from `gh release create --generate-notes`. The same workflow also runs on pushes to `main` when Rust sources or the PKGBUILD change, to warm a shared Cargo cache that tagged release builds restore. CI on `main` already runs `cargo test --locked`, so the release job passes `--nocheck` to `makepkg`.
+
+Confirm the Release page has the `.pkg.tar.zst` file. Installers follow the steps in `README.md`.
 
 You can also run the Arch workflow by hand with `workflow_dispatch`. That builds and uploads the package as a workflow artifact. It only creates or updates a GitHub Release when the run is on a tag.
 
