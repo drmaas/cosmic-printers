@@ -1,148 +1,224 @@
 #!/bin/sh
-# Cut a tagged release: bump versions, sync Cargo.lock, commit, tag, push.
-# Pushing the v* tag starts .github/workflows/release-arch.yml.
+# Release cosmic-printers: bump versions, commit, push main, push a v* tag.
+#
+# Usage:
+#   scripts/release.sh [--dry-run] [--yes] [--skip-check] <major|minor|patch|X.Y.Z|vX.Y.Z>
+#
+# Three values must match after the bump (see scripts/check-version.sh):
+#   - git tag vX.Y.Z
+#   - Cargo.toml version
+#   - arch/PKGBUILD pkgver
+#
+# The tag push triggers .github/workflows/release-arch.yml, which publishes the
+# GitHub Release and the Arch package. Do not push a v* tag only to test that.
 set -eu
 
+dry_run=0
+assume_yes=0
+skip_check=0
+bump=
+
 usage() {
-    echo "usage: scripts/release.sh [--dry-run] vX.Y.Z" >&2
-    exit 2
+    echo "usage: scripts/release.sh [--dry-run] [--yes] [--skip-check] <major|minor|patch|X.Y.Z|vX.Y.Z>" >&2
 }
 
-dry_run=0
-version=""
+die() {
+    echo "$*" >&2
+    exit 1
+}
 
-for arg in "$@"; do
-    case "$arg" in
-        --dry-run)
-            dry_run=1
-            ;;
-        -h | --help)
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --dry-run) dry_run=1 ;;
+        --yes|-y) assume_yes=1 ;;
+        --skip-check) skip_check=1 ;;
+        -h|--help)
             usage
+            exit 0
             ;;
         -*)
-            echo "unknown option: $arg" >&2
             usage
+            die "unknown option: $1"
             ;;
         *)
-            if [ -n "$version" ]; then
+            if [ -n "$bump" ]; then
                 usage
+                die "unexpected argument: $1"
             fi
-            version=$arg
+            bump=$1
             ;;
     esac
+    shift
 done
 
-if [ -z "$version" ]; then
+if [ -z "$bump" ]; then
     usage
+    exit 2
 fi
 
-version=${version#v}
-case "$version" in
-    [0-9]*.[0-9]*.[0-9]*)
-        ;;
-    *)
-        echo "version must look like X.Y.Z (got: $version)" >&2
-        exit 2
-        ;;
-esac
-
-tag="v$version"
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$root"
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "not a git repository" >&2
-    exit 1
+    die "not inside a git repository"
 fi
 
-branch=$(git rev-parse --abbrev-ref HEAD)
-if [ "$branch" != "main" ]; then
-    echo "must run on main (current branch: $branch)" >&2
-    exit 1
+command -v cargo >/dev/null 2>&1 || die "cargo not found"
+command -v just >/dev/null 2>&1 || die "just not found"
+command -v gh >/dev/null 2>&1 || die "gh not found"
+
+cargo_toml=Cargo.toml
+pkgbuild=arch/PKGBUILD
+
+current=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$cargo_toml" | head -n 1)
+[ -n "$current" ] || die "could not read version from $cargo_toml"
+
+case "$current" in
+    *.*.*) ;;
+    *) die "current version is not X.Y.Z: $current" ;;
+esac
+
+IFS=. read -r cur_major cur_minor cur_patch <<EOF
+$current
+EOF
+
+case "$bump" in
+    major)
+        next_major=$((cur_major + 1))
+        next="${next_major}.0.0"
+        ;;
+    minor)
+        next_minor=$((cur_minor + 1))
+        next="${cur_major}.${next_minor}.0"
+        ;;
+    patch)
+        next_patch=$((cur_patch + 1))
+        next="${cur_major}.${cur_minor}.${next_patch}"
+        ;;
+    v[0-9]*.[0-9]*.[0-9]*|[0-9]*.[0-9]*.[0-9]*)
+        next=${bump#v}
+        case "$next" in
+            [0-9]*.[0-9]*.[0-9]*)
+                # Reject extra segments like 1.2.3.4
+                case "$next" in
+                    *.*.*.*) die "version must be X.Y.Z: $bump" ;;
+                esac
+                ;;
+            *) die "version must be X.Y.Z: $bump" ;;
+        esac
+        ;;
+    *)
+        die "expected major, minor, patch, or X.Y.Z; got: $bump"
+        ;;
+esac
+
+if [ "$next" = "$current" ]; then
+    die "version is already $current"
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
-    echo "working tree not clean; commit or stash first" >&2
-    exit 1
-fi
+tag="v${next}"
 
-git fetch origin main
-if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
-    echo "main is not up to date with origin/main; pull first" >&2
-    exit 1
-fi
-
-if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-    echo "tag $tag already exists locally" >&2
-    exit 1
-fi
-
-if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-    echo "tag $tag already exists on origin" >&2
-    exit 1
-fi
-
-current=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
-if [ "$current" = "$version" ]; then
-    echo "Cargo.toml is already at $version" >&2
-    exit 1
-fi
-
-echo "releasing $current -> $version"
-
-edited=0
-restore() {
-    git checkout -- Cargo.toml arch/PKGBUILD Cargo.lock
-}
-trap 'if [ "$dry_run" -eq 1 ] || [ "$edited" -eq 1 ]; then restore; fi' EXIT
-
-tmp=$(mktemp)
-sed "0,/^version = \".*\"/s//version = \"$version\"/" Cargo.toml >"$tmp"
-mv "$tmp" Cargo.toml
-
-tmp=$(mktemp)
-awk -v ver="$version" '
-    /^pkgver=/ { print "pkgver=" ver; next }
-    /^pkgrel=/ { print "pkgrel=1"; next }
-    { print }
-' arch/PKGBUILD >"$tmp"
-mv "$tmp" arch/PKGBUILD
-edited=1
-
-# Package version lives in Cargo.lock; --locked builds fail without this.
-cargo update -p cosmic-printers --precise "$version"
-
-./scripts/check-version.sh "$tag"
-
-lock_version=$(
-    awk '
-        $0 == "name = \"cosmic-printers\"" { found=1; next }
-        found && /^version = / {
-            gsub(/"/, "", $3)
-            print $3
-            exit
-        }
-    ' Cargo.lock
-)
-if [ "$lock_version" != "$version" ]; then
-    echo "Cargo.lock still at $lock_version, expected $version" >&2
-    exit 1
+echo "Release plan:"
+echo "  current: $current"
+echo "  next:    $next ($tag)"
+echo "  bump:    $cargo_toml, $pkgbuild (pkgrel=1), Cargo.lock"
+echo "  commit:  chore(release): $next"
+echo "  push:    origin/main and $tag"
+if [ "$skip_check" -eq 1 ]; then
+    echo "  check:   skipped"
+else
+    echo "  check:   just check && just test"
 fi
 
 if [ "$dry_run" -eq 1 ]; then
-    echo "dry-run: would commit, tag $tag, and push"
-    git --no-pager diff --stat
+    echo "dry run only; no changes made"
     exit 0
 fi
 
-git add Cargo.toml arch/PKGBUILD Cargo.lock
-git commit -m "chore(release): $version"
-edited=0
-git tag -a "$tag" -m "$tag"
-trap - EXIT
+branch=$(git branch --show-current)
+[ "$branch" = "main" ] || die "must be on main (on $branch)"
+
+if [ -n "$(git status --porcelain)" ]; then
+    die "working tree is not clean"
+fi
+
+git fetch origin main --tags
+
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+    die "main is not synced with origin/main; pull or push first"
+fi
+
+if git rev-parse "$tag" >/dev/null 2>&1; then
+    die "local tag already exists: $tag"
+fi
+
+if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+    die "remote tag already exists: $tag"
+fi
+
+if [ "$assume_yes" -ne 1 ]; then
+    printf "Proceed? [y/N] "
+    read -r answer
+    case "$answer" in
+        y|Y|yes|YES) ;;
+        *) die "aborted" ;;
+    esac
+fi
+
+# Replace only the package version line (first ^version = in the crate manifest).
+awk -v ver="$next" '
+    BEGIN { done = 0 }
+    !done && /^version = "/ {
+        print "version = \"" ver "\""
+        done = 1
+        next
+    }
+    { print }
+' "$cargo_toml" >"$cargo_toml.tmp"
+mv "$cargo_toml.tmp" "$cargo_toml"
+
+awk -v ver="$next" '
+    /^pkgver=/ { print "pkgver=" ver; next }
+    /^pkgrel=/ { print "pkgrel=1"; next }
+    { print }
+' "$pkgbuild" >"$pkgbuild.tmp"
+mv "$pkgbuild.tmp" "$pkgbuild"
+
+cargo update -p cosmic-printers --precise "$next"
+
+scripts/check-version.sh "$tag"
+
+if [ "$skip_check" -eq 0 ]; then
+    just check
+    just test
+fi
+
+git add "$cargo_toml" "$pkgbuild" Cargo.lock
+git commit -m "chore(release): ${next}"
+
+scripts/check-version.sh "$tag"
+
 git push origin main
+git tag -a "$tag" -m "$tag"
 git push origin "$tag"
 
-echo "pushed $tag"
-echo "watch: gh run watch --exit-status \$(gh run list --workflow=release-arch.yml --branch $tag --limit 1 --json databaseId -q '.[0].databaseId')"
-echo "release: https://github.com/drmaas/cosmic-printers/releases/tag/$tag"
+echo "Waiting for Release Arch package workflow..."
+# Tag push can take a moment to appear in the Actions API.
+i=0
+run_id=
+while [ "$i" -lt 30 ]; do
+    run_id=$(gh run list --workflow=release-arch.yml --branch "$tag" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+    if [ -n "$run_id" ]; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 2
+done
+
+[ -n "$run_id" ] || die "no release-arch run found for $tag"
+
+gh run watch "$run_id" --exit-status
+gh release view "$tag"
+
+echo "Released $tag"
+echo "  https://github.com/drmaas/cosmic-printers/releases/tag/$tag"

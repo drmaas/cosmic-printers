@@ -39,6 +39,6 @@ Tests must not start CUPS or connect to a bus. Parse sample `lpstat` text and ap
 
 ## Versions and packaging
 
-`Cargo.toml` `version` and `arch/PKGBUILD` `pkgver` stay equal; also sync `Cargo.lock` when bumping. Tag builds run `scripts/check-version.sh`. Cut releases with `./scripts/release.sh X.Y.Z` (or `just release X.Y.Z`). The Arch package is the only release artifact. Do not add deb, rpm, Nix, or Flatpak packaging unless asked.
+`Cargo.toml` `version` and `arch/PKGBUILD` `pkgver` stay equal; also sync `Cargo.lock` when bumping. Tag builds run `scripts/check-version.sh`. Cut releases with `scripts/release.sh` (or `just release`); do not invent a second path. The Arch package is the only release artifact. Do not add deb, rpm, Nix, or Flatpak packaging unless asked.
 
 User-facing docs (`README.md`, release notes) stay in plain language. This file can name modules and commands.
