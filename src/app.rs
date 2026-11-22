@@ -26,7 +26,7 @@ pub struct AppModel {
     pending: Option<Pending>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Pending {
     CancelJob {
         printer: String,
@@ -203,7 +203,7 @@ impl cosmic::Application for AppModel {
             Message::PopupClosed(id) => {
                 if self.popup == Some(id) {
                     self.popup = None;
-                    self.pending = None;
+                    clear_pending_on_popup_closed(&mut self.pending);
                 }
             }
             Message::Surface(action) => {
@@ -612,6 +612,13 @@ fn report_cancel_all(outcome: &CancelAllOutcome) {
     }
 }
 
+fn clear_pending_on_popup_closed(pending: &mut Option<Pending>) {
+    if matches!(pending.as_ref(), Some(Pending::FailureReport { .. })) {
+        return;
+    }
+    *pending = None;
+}
+
 fn confirm(pending: Pending) -> Option<CancelAllOutcome> {
     match pending {
         Pending::CancelJob {
@@ -714,7 +721,10 @@ mod tests {
     use crate::fl;
     use crate::i18n;
 
-    use super::{CancelAllOutcome, cancel_all_jobs, cancel_all_report_lines};
+    use super::{
+        CancelAllOutcome, Pending, cancel_all_jobs, cancel_all_report_lines,
+        clear_pending_on_popup_closed,
+    };
 
     static INIT_I18N: Once = Once::new();
 
@@ -739,6 +749,40 @@ mod tests {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn popup_closed_drops_confirm_pending() {
+        let mut pending = Some(Pending::CancelAll {
+            printer: "office".into(),
+            job_ids: vec![1, 2],
+        });
+        clear_pending_on_popup_closed(&mut pending);
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn popup_closed_keeps_failure_report() {
+        let mut pending = Some(Pending::FailureReport {
+            lines: vec!["Canceled 1 of 3 jobs".into()],
+        });
+        clear_pending_on_popup_closed(&mut pending);
+        assert!(matches!(pending, Some(Pending::FailureReport { .. })));
+    }
+
+    #[test]
+    fn partial_cancel_report_survives_external_popup_close() {
+        init_i18n();
+        let outcome = cancel_all_jobs("office", &[1, 2, 3], |_printer, job_id| match job_id {
+            1 | 3 => Err(format!("failed to cancel job {job_id}")),
+            _ => Ok(()),
+        });
+        let lines = cancel_all_report_lines(&outcome);
+        let mut pending = Some(Pending::FailureReport {
+            lines: lines.clone(),
+        });
+        clear_pending_on_popup_closed(&mut pending);
+        assert_eq!(pending, Some(Pending::FailureReport { lines }),);
     }
 
     #[test]
