@@ -8,7 +8,9 @@ use cosmic::widget;
 use futures::SinkExt;
 
 use crate::config::{self, Config, ShowIcon};
-use crate::cups::{self, ApplyResult, BootstrapWarning, CupsSignal, Queue, QueueError, Tools};
+use crate::cups::{
+    self, ApplyResult, BootstrapWarning, CupsSignal, JobListTrust, Queue, QueueError, Tools,
+};
 use crate::fl;
 use crate::status::{
     self, ICON_RUNNING, JOB_STATE_PROCESSING, PanelStatus, StatusInput, Tooltip, WarningKind,
@@ -297,7 +299,7 @@ impl AppModel {
                 job_count: printer.jobs.len(),
             })
             .collect::<Vec<_>>();
-        let jobs_degraded = matches!(self.queue.warning, Some(BootstrapWarning::JobsUnavailable));
+        let jobs_degraded = self.queue.job_list_trust == JobListTrust::Degraded;
         panel_status(&inputs, jobs_degraded)
     }
 
@@ -389,8 +391,10 @@ impl AppModel {
             .width(Length::Fill);
         if let Some(error) = self.queue.error {
             column = column.push(widget::text(queue_error_text(error)));
-        } else if let Some(warning) = self.queue.warning {
-            column = column.push(widget::text(bootstrap_warning_text(warning)));
+        } else if self.queue.job_list_trust == JobListTrust::Degraded {
+            column = column.push(widget::text(bootstrap_warning_text(
+                BootstrapWarning::JobsUnavailable,
+            )));
         }
 
         if self.queue.printers.is_empty() {
