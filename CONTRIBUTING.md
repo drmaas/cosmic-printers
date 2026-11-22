@@ -18,19 +18,24 @@ Thanks for looking at the printer applet. Issues and pull requests are welcome.
 
 The Arch package is the only release artifact. Do not add deb, rpm, Nix, or Flatpak packaging unless that is an explicit project decision.
 
-Maintainers cut a release like this:
+From a clean `main` that matches `origin/main`, run the release script. It bumps `Cargo.toml`, `arch/PKGBUILD` (`pkgver`, `pkgrel=1`), and `Cargo.lock`, runs `just check` and `just test`, commits, pushes `main`, pushes the `v*` tag, and watches the Arch release workflow:
 
-1. On `main`, set the same version in `Cargo.toml` (`version`) and `arch/PKGBUILD` (`pkgver`). Use `X.Y.Z` with no `v` prefix in those files. Set `pkgrel` to `1` for a new version.
-2. Merge that change to `main`.
-3. Tag the release commit and push the tag:
-
-```sh
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
+```bash
+scripts/release.sh minor          # or major, patch, or vX.Y.Z
+# just release minor
 ```
 
-4. Pushing a `v*` tag starts `.github/workflows/release-arch.yml`. The job runs `scripts/check-version.sh` against the tag, builds `cosmic-printers-*.pkg.tar.zst`, and publishes a GitHub Release with that package attached. Release notes come from `gh release create --generate-notes`. The same workflow also runs on pushes to `main` when Rust sources or the PKGBUILD change, to warm a shared Cargo cache that tagged release builds restore. CI on `main` already runs `cargo test --locked`, so the release job passes `--nocheck` to `makepkg`.
-5. Confirm the Release page has the `.pkg.tar.zst` file. Installers follow the steps in `README.md`.
+Useful flags: `--dry-run` (print the plan only), `--yes` (no prompt), `--skip-check` (skip `just check` / `just test`).
+
+Pushing a `v*` tag starts `.github/workflows/release-arch.yml`. The job runs `scripts/check-version.sh` against the tag, builds `cosmic-printers-*.pkg.tar.zst`, and publishes a GitHub Release with that package attached. Release notes come from `gh release create --generate-notes`. The same workflow also runs on pushes to `main` when Rust sources or the PKGBUILD change, to warm a shared Cargo cache that tagged release builds restore. CI on `main` already runs `cargo test --locked`, so the release job passes `--nocheck` to `makepkg`.
+
+Confirm the Release page has the `.pkg.tar.zst` file. Installers follow the steps in `README.md`.
+
+To verify versions without releasing:
+
+```bash
+scripts/check-version.sh vX.Y.Z
+```
 
 You can also run the Arch workflow by hand with `workflow_dispatch`. That builds and uploads the package as a workflow artifact. It only creates or updates a GitHub Release when the run is on a tag.
 

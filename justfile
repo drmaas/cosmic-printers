@@ -40,3 +40,6 @@ install: build-release
 
 uninstall:
     rm -f {{ bin-dst }} {{ desktop-dst }} {{ metainfo-dst }} {{ icon-dst }}
+
+release *args:
+    scripts/release.sh {{ args }}
