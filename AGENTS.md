@@ -20,6 +20,8 @@ just run
 
 `just install` copies the binary, desktop file, metainfo, and icon under `/usr`.
 
+`scripts/install-applet.sh [--dry-run] [--yes] [latest|X.Y.Z|vX.Y.Z]` (or `just install-applet`) downloads the GitHub Release Arch package and runs `pacman -U`. That is the user install path. It is not `just install`. Stub checks: `scripts/test-install-applet.sh`.
+
 ## Layout
 
 - `src/main.rs` loads Fluent strings and starts `cosmic::applet::run`.

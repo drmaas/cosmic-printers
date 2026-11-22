@@ -8,11 +8,17 @@ The applet follows the same jobs you can manage from the Cinnamon printers apple
 
 ## Install
 
-Download the latest `cosmic-printers-*.pkg.tar.zst` from the [Releases](https://github.com/drmaas/cosmic-printers/releases) page and install it with pacman:
+On Arch x86_64, install the release package with the install script (clone this repo, or save the script and run that file — do not pipe it into `sh`):
 
 ```sh
-sudo pacman -U ./cosmic-printers-*.pkg.tar.zst
+scripts/install-applet.sh
+scripts/install-applet.sh 0.1.4
+scripts/install-applet.sh --dry-run latest
 ```
+
+`latest` is the default. Pass `X.Y.Z` or `vX.Y.Z` to pin a release. `--yes` skips pacman prompts. `--dry-run` prints the planned tag, package, and `pacman` command without downloading or installing.
+
+The package is unsigned. The script downloads it over HTTPS from GitHub Releases, same trust as a manual download. You can still download `cosmic-printers-*.pkg.tar.zst` from the [Releases](https://github.com/drmaas/cosmic-printers/releases) page and run `sudo pacman -U` yourself.
 
 Then add it to the panel:
 
