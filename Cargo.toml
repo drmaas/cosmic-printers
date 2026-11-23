@@ -23,8 +23,8 @@ version = "0.16"
 features = ["fluent-system", "desktop-requester"]
 
 [dependencies.libcosmic]
-git = "https://github.com/pop-os/libcosmic.git"
-rev = "8fa46ccd444ca6521ce247ef62c63f9e207348e5"
+# Commit pinned in Cargo.lock at 8fa46ccd444ca6521ce247ef62c63f9e207348e5 (same URL as transitive COSMIC git deps).
+git = "https://github.com/pop-os/libcosmic"
 default-features = false
 features = [
     "applet",
