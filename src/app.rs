@@ -19,6 +19,8 @@ use crate::status::{
 
 pub const APP_ID: &str = "io.github.drmaas.CosmicPrinters";
 
+const JOB_TRUST_REVALIDATE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct AppModel {
     core: cosmic::Core,
     popup: Option<Id>,
@@ -26,6 +28,7 @@ pub struct AppModel {
     queue: Queue,
     tools: Tools,
     pending: Option<Pending>,
+    job_trust_revalidate_pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +75,8 @@ pub enum Message {
         job_id: u32,
     },
     PropertiesOpened,
+    RevalidateJobListTrust,
+    JobListTrustProbe(bool),
 }
 
 impl cosmic::Application for AppModel {
@@ -103,6 +108,7 @@ impl cosmic::Application for AppModel {
                 properties: false,
             },
             pending: None,
+            job_trust_revalidate_pending: false,
         };
         (
             app,
@@ -218,11 +224,31 @@ impl cosmic::Application for AppModel {
             }
             Message::Snapshot(queue) => self.queue = queue,
             Message::Cups(signal) => {
+                let schedule_revalidate =
+                    job_signal(&signal) && self.queue.job_list_trust == JobListTrust::Degraded;
                 if self.queue.handle_signal(signal) == ApplyResult::Reset {
                     return cosmic::task::future(async {
                         Message::Snapshot(cups::bootstrap().await)
                     });
                 }
+                if schedule_revalidate {
+                    return self.schedule_debounced_job_trust_revalidation();
+                }
+            }
+            Message::RevalidateJobListTrust => {
+                self.job_trust_revalidate_pending = false;
+                if self.queue.job_list_trust != JobListTrust::Degraded {
+                    return Task::none();
+                }
+                return cosmic::task::future(async {
+                    let jobs_available = tokio::task::spawn_blocking(cups::jobs_lpstat_succeeds)
+                        .await
+                        .unwrap_or(false);
+                    Message::JobListTrustProbe(jobs_available)
+                });
+            }
+            Message::JobListTrustProbe(jobs_available) => {
+                cups::try_restore_job_list_trust(&mut self.queue, jobs_available);
             }
             Message::Tools(tools) => self.tools = tools,
             Message::OpenPrinterSettings(printer) => {
@@ -338,7 +364,26 @@ impl AppModel {
             .max_width(372.0)
             .min_height(1.0)
             .max_height(1080.0);
-        get_popup(settings)
+        Task::batch([get_popup(settings), self.probe_job_list_trust()])
+    }
+
+    fn probe_job_list_trust(&mut self) -> Task<cosmic::Action<Message>> {
+        if self.queue.job_list_trust != JobListTrust::Degraded {
+            return Task::none();
+        }
+        cosmic::task::future(async { Message::RevalidateJobListTrust })
+    }
+
+    fn schedule_debounced_job_trust_revalidation(&mut self) -> Task<cosmic::Action<Message>> {
+        if self.queue.job_list_trust != JobListTrust::Degraded || self.job_trust_revalidate_pending
+        {
+            return Task::none();
+        }
+        self.job_trust_revalidate_pending = true;
+        cosmic::task::future(async move {
+            tokio::time::sleep(JOB_TRUST_REVALIDATE_DELAY).await;
+            Message::RevalidateJobListTrust
+        })
     }
 
     fn close_popup(&mut self) -> Task<cosmic::Action<Message>> {
@@ -691,6 +736,13 @@ fn bootstrap_warning_text(warning: BootstrapWarning) -> String {
 
 fn count_arg(count: usize) -> i64 {
     i64::try_from(count).unwrap_or(i64::MAX)
+}
+
+fn job_signal(signal: &CupsSignal) -> bool {
+    matches!(
+        signal,
+        CupsSignal::JobUpsert { .. } | CupsSignal::JobRemoved { .. }
+    )
 }
 
 fn cups_subscription() -> Subscription<Message> {

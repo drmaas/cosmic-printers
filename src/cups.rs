@@ -578,6 +578,27 @@ fn apply_bootstrap_status(
     }
 }
 
+/// While trust is degraded, a successful jobs `lpstat` restores full trust without re-bootstrap.
+pub fn try_restore_job_list_trust(queue: &mut Queue, jobs_available: bool) {
+    if queue.job_list_trust != JobListTrust::Degraded {
+        return;
+    }
+    if queue.error.is_some() || queue.printers.is_empty() {
+        return;
+    }
+    if jobs_available {
+        queue.job_list_trust = JobListTrust::Full;
+    }
+}
+
+pub fn jobs_lpstat_succeeds() -> bool {
+    let jobs = run_command("lpstat", &["-W", "not-completed", "-o"]);
+    if let CommandResult::Failed(ref error) = jobs {
+        eprintln!("cosmic-printers: {error}");
+    }
+    matches!(jobs, CommandResult::Ok(_))
+}
+
 fn command_text(result: &CommandResult) -> &str {
     match result {
         CommandResult::Ok(text) => text,
@@ -1100,7 +1121,7 @@ mod tests {
         ApplyResult, CommandResult, CupsSignal, Job, JobListTrust, Queue, apply_bootstrap_status,
         device_identities, parse_alerts_line, parse_destination_list, parse_device_uri_map,
         parse_job_line, parse_printer_line, queue_from_outputs, queue_printer_names,
-        send_job_to_front,
+        send_job_to_front, try_restore_job_list_trust,
     };
     use crate::status::{
         ICON_IDLE, ICON_PRINTING, JOB_STATE_CANCELED, JOB_STATE_PROCESSING, PRINTER_STATE_IDLE,
@@ -1388,6 +1409,22 @@ printer Office_Laser is idle.  enabled since Tue Nov 10 10:00:00 2026
         assert!(queue.error.is_none());
         assert_eq!(queue.job_list_trust, JobListTrust::Degraded);
         assert_eq!(queue.printers.len(), 1);
+    }
+
+    #[test]
+    fn degraded_trust_recovers_after_successful_jobs_lpstat() {
+        let queue = processing_queue_without_jobs(JobListTrust::Degraded);
+        let mut queue = queue;
+        assert_eq!(
+            panel_status(&panel_inputs(&queue), true).tooltip,
+            Tooltip::JobsUnavailable
+        );
+
+        try_restore_job_list_trust(&mut queue, true);
+
+        assert_eq!(queue.job_list_trust, JobListTrust::Full);
+        let status = panel_status(&panel_inputs(&queue), false);
+        assert_ne!(status.tooltip, Tooltip::JobsUnavailable);
     }
 
     #[test]
