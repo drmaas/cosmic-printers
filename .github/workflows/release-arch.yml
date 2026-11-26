@@ -31,16 +31,18 @@ jobs:
     runs-on: ubuntu-24.04
     container: archlinux:latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Install the toolchain and build dependencies
         run: |
           pacman -Syu --noconfirm --needed \
             base-devel git github-cli cargo \
             pkgconf wayland libxkbcommon fontconfig freetype2 expat \
             vulkan-headers mesa libinput dbus cups
+
+      # Run checkout after git is installed. The Arch image has no git, and
+      # actions/checkout falls back to a REST archive without a .git directory.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Record Rust toolchain version
         id: rustc
