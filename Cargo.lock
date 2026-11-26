@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "cosmic-printers"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "futures",
  "i18n-embed",
